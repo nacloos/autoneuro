@@ -1,4 +1,5 @@
 run.log
+*.log
 results.tsv
 results/
 __pycache__/
