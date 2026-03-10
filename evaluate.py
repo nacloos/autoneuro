@@ -35,9 +35,12 @@ from train import TrainConfig, make_task_config, run_task
 
 
 RESULTS_TSV = BASE_DIR / "results.tsv"
-RESULTS_HEADER_FIELDS = ["commit", "test_acc", "memory_gb", "status", "description", "run_dir"]
+RESULTS_HEADER_FIELDS = ["commit", "test_acc", "memory_gb", "status", "description"]
 RESULTS_HEADER = "\t".join(RESULTS_HEADER_FIELDS) + "\n"
-OLD_RESULTS_HEADER = "commit\ttest_acc\tstatus\tdescription\trun_dir"
+OLD_RESULTS_HEADERS = {
+    "commit\ttest_acc\tstatus\tdescription\trun_dir",
+    "commit\ttest_acc\tmemory_gb\tstatus\tdescription\trun_dir",
+}
 GPU_POLL_SECONDS = 0.5
 
 
@@ -192,7 +195,7 @@ def _ensure_results_tsv(path: Path) -> None:
     if header == "\t".join(RESULTS_HEADER_FIELDS):
         return
 
-    if header == OLD_RESULTS_HEADER:
+    if header in OLD_RESULTS_HEADERS:
         migrated = [RESULTS_HEADER.rstrip("\n")]
         for line in lines[1:]:
             if not line.strip():
@@ -200,9 +203,12 @@ def _ensure_results_tsv(path: Path) -> None:
             parts = line.split("\t")
             if len(parts) < 5:
                 continue
-            commit, test_acc, status, description = parts[:4]
-            run_dir = "\t".join(parts[4:])
-            migrated.append(f"{commit}\t{test_acc}\t0.0\t{status}\t{description}\t{run_dir}")
+            if len(parts) >= 6:
+                commit, test_acc, memory_gb, status, description = parts[:5]
+            else:
+                commit, test_acc, status, description = parts[:4]
+                memory_gb = "0.0"
+            migrated.append(f"{commit}\t{test_acc}\t{memory_gb}\t{status}\t{description}")
         path.write_text("\n".join(migrated) + "\n")
         return
 
@@ -256,12 +262,11 @@ def _append_result(
     memory_gb: float,
     status: str,
     description: str,
-    run_dir: str,
 ) -> None:
     _ensure_results_tsv(path)
     with path.open("a") as f:
         f.write(
-            f"{commit}\t{test_acc:.6f}\t{memory_gb:.1f}\t{status}\t{_clean_description(description)}\t{run_dir}\n"
+            f"{commit}\t{test_acc:.6f}\t{memory_gb:.1f}\t{status}\t{_clean_description(description)}\n"
         )
 
 
@@ -291,10 +296,8 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     commit = _git_commit_short()
-    run_dir = ""
     try:
         out = run_once()
-        run_dir = str(out.get("run_dir", ""))
         if not args.no_log:
             status = args.status if args.status != "auto" else _auto_status(RESULTS_TSV, out["test_acc"])
             _append_result(
@@ -304,14 +307,13 @@ if __name__ == "__main__":
                 out.get("memory_gb", 0.0),
                 status,
                 args.description,
-                run_dir,
             )
             print(f"status:     {status}")
             print(f"results:    {RESULTS_TSV}")
     except Exception as exc:
         if not args.no_log:
             desc = f"{args.description} | crash: {type(exc).__name__}: {exc}"
-            _append_result(RESULTS_TSV, commit, 0.0, 0.0, "crash", desc, run_dir)
+            _append_result(RESULTS_TSV, commit, 0.0, 0.0, "crash", desc)
             print("status:     crash")
             print(f"results:    {RESULTS_TSV}")
         raise

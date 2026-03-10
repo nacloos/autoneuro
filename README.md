@@ -30,7 +30,7 @@ grep "^test_acc:\|^memory_gb:\|^status:\|^results:" run.log
 Each run appends one row to `results.tsv` with columns:
 
 ```tsv
-commit	test_acc	memory_gb	status	description	run_dir
+commit	test_acc	memory_gb	status	description
 ```
 
 `status` can be `keep`, `discard`, or `crash`.
