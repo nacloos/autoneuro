@@ -142,6 +142,66 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
 
 
 # =============================================================================
+# Module 3: Sensory Gating (attention-inspired)
+# =============================================================================
+
+@struct.dataclass
+class SensoryGateParams:
+    """Parameters for sensory gating module.
+
+    Inspired by top-down attention / gain modulation in sensory cortex.
+    Computes a context-dependent gain vector that multiplicatively gates
+    a learned transformation of the input. This helps the model focus
+    on task-relevant input dimensions.
+
+    g_t = sigmoid(W_g @ x_t + b_g)        -- gain vector (per-feature)
+    z_t = g_t * (W_z @ x_t + b_z)         -- gated transform
+    h_t = (1 - λ_t) * h_{t-1} + λ_t * z_t  -- smooth integration
+    y_t = W_out @ h_t
+    """
+    W_g: jnp.ndarray         # (h_dim, input_dim) - gain computation
+    b_g: jnp.ndarray         # (h_dim,)
+    W_z: jnp.ndarray         # (h_dim, input_dim) - value transform
+    b_z: jnp.ndarray         # (h_dim,)
+    w_lam: jnp.ndarray       # (input_dim,) - integration rate
+    b_lam: jnp.ndarray       # (1,)
+    W_out: jnp.ndarray       # (output_dim, h_dim)
+
+
+def sensory_gate_step(params: SensoryGateParams, state: jnp.ndarray, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Single step of sensory gating module.
+
+    Args:
+        params: SensoryGateParams
+        state: h - hidden state (h_dim,)
+        x: input (input_dim,)
+
+    Returns:
+        h_new: updated hidden state (h_dim,)
+        y: output (output_dim,)
+        lam: integration rate (scalar)
+    """
+    h = state
+
+    # Gain vector: sigmoid gates per hidden dimension
+    g = jax.nn.sigmoid(params.W_g @ x + params.b_g)
+
+    # Value transform
+    z = g * (params.W_z @ x + params.b_z)
+
+    # Integration rate
+    lam = jax.nn.sigmoid(params.w_lam @ x + params.b_lam).squeeze()
+
+    # Smooth temporal integration
+    h_new = (1 - lam) * h + lam * z
+
+    # Output
+    y = params.W_out @ h_new
+
+    return h_new, y, lam
+
+
+# =============================================================================
 # Combined Modular Model
 # =============================================================================
 
@@ -149,14 +209,15 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
 class ModularParams:
     """Parameters for modular model with configurable modules per type.
 
-    Can have different numbers of each module type (integrator, memory).
+    Module types: integrator, memory, sensory_gate.
     Selection via softmax(W_sel @ x + b_sel).
     Includes a "null" module that outputs zeros (allows skipping all modules).
     """
-    integrators: Tuple[IntegratorParams, ...]  # K_int integrator modules
-    memories: Tuple[MemoryParams, ...]  # K_mem memory modules
-    W_sel: jnp.ndarray  # (n_selections, input_dim) - selection weights (includes null)
-    b_sel: jnp.ndarray  # (n_selections,) - selection biases (includes null)
+    integrators: Tuple[IntegratorParams, ...]
+    memories: Tuple[MemoryParams, ...]
+    sensory_gates: Tuple[SensoryGateParams, ...]
+    W_sel: jnp.ndarray  # (n_selections, input_dim)
+    b_sel: jnp.ndarray  # (n_selections,)
 
 
 def modular_forward(
@@ -190,42 +251,47 @@ def modular_forward(
 
     K_int = len(params.integrators)
     K_mem = len(params.memories)
-    total_modules = K_int + K_mem
+    K_sg = len(params.sensory_gates)
+    total_modules = K_int + K_mem + K_sg
     if total_modules == 0:
-        raise ValueError("modular_forward requires at least one integrator or memory module")
+        raise ValueError("modular_forward requires at least one module")
 
     # Get dimensions from first module of each type (if exists)
     h_dim = params.integrators[0].W1.shape[0] if K_int > 0 else 0
     d_k_mem = params.memories[0].W_k.shape[0] if K_mem > 0 else 0
     d_v_mem = params.memories[0].W_v.shape[0] if K_mem > 0 else 0
+    sg_dim = params.sensory_gates[0].W_g.shape[0] if K_sg > 0 else 0
 
     def step(states, x):
-        int_states, mem_states = states
+        int_states, mem_states, sg_states = states
 
         all_outputs = []
         new_int_states = []
         new_mem_states = []
+        new_sg_states = []
 
-        # Collect gates if needed (will be concatenated into array)
         gate_values = [] if return_gates else None
 
-        # Run all K_int integrator modules
         for i in range(K_int):
             h_new, y, alpha, beta = integrator_step(params.integrators[i], int_states[i], x)
             new_int_states.append(h_new)
             all_outputs.append(y)
-
             if return_gates:
                 gate_values.extend([alpha, beta])
 
-        # Run all K_mem memory modules
         for i in range(K_mem):
             S_new, y, omega = memory_step(params.memories[i], mem_states[i], x)
             new_mem_states.append(S_new)
             all_outputs.append(y)
-
             if return_gates:
                 gate_values.append(omega)
+
+        for i in range(K_sg):
+            h_new, y, lam = sensory_gate_step(params.sensory_gates[i], sg_states[i], x)
+            new_sg_states.append(h_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(lam)
 
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
@@ -249,7 +315,7 @@ def modular_forward(
         # For soft selection (differentiable): y = sel_weights @ all_outputs
         y = sel_weights @ all_outputs  # (output_dim,)
 
-        new_states = (new_int_states, new_mem_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -261,12 +327,13 @@ def modular_forward(
     # Initialize states for all modules
     int_states_0 = [jnp.zeros(h_dim) for _ in range(K_int)]
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
-    initial_states = (int_states_0, mem_states_0)
+    sg_states_0 = [jnp.zeros(sg_dim) for _ in range(K_sg)]
+    initial_states = (int_states_0, mem_states_0, sg_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -274,32 +341,23 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int) -> dict:
-    """Parse concatenated gate array into named dict.
-
-    Args:
-        gate_arrays: (seq_len, total_gates) where total_gates = K_int*2 + K_mem*1
-        K_int: Number of integrator modules
-        K_mem: Number of memory modules
-
-    Returns:
-        Dict mapping gate names to (seq_len,) arrays:
-        - integrator_{i}_alpha, integrator_{i}_beta for i in 0..K_int-1
-        - memory_{i}_omega for i in 0..K_mem-1
-    """
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0) -> dict:
+    """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
 
-    # Integrator gates: K_int * (alpha, beta)
     for i in range(K_int):
         gates[f'int{i}_alpha'] = gate_arrays[:, idx]
         idx += 1
         gates[f'int{i}_beta'] = gate_arrays[:, idx]
         idx += 1
 
-    # Memory gates: K_mem * omega
     for i in range(K_mem):
         gates[f'mem{i}_omega'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_sg):
+        gates[f'sg{i}_lambda'] = gate_arrays[:, idx]
         idx += 1
 
     return gates
@@ -362,6 +420,26 @@ def init_memory_params(
     )
 
 
+def init_sensory_gate_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> SensoryGateParams:
+    """Initialize sensory gating module parameters."""
+    keys = jax.random.split(rng, 4)
+    scale = 0.1
+    return SensoryGateParams(
+        W_g=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_g=jnp.zeros(h_dim),
+        W_z=jax.random.normal(keys[1], (h_dim, input_dim)) * scale,
+        b_z=jnp.zeros(h_dim),
+        w_lam=jax.random.normal(keys[2], (input_dim,)) * scale,
+        b_lam=jnp.zeros(1),
+        W_out=jax.random.normal(keys[3], (output_dim, h_dim)) * scale,
+    )
+
+
 def init_modular_params(
     rng: jax.Array,
     input_dim: int,
@@ -397,32 +475,34 @@ def init_modular_params(
             raise ValueError(f"K must be int or tuple of length 2, got: {K}")
         K_int, K_mem = K
 
-    total_modules = K_int + K_mem
+    K_sg = 1  # Always add 1 sensory gating module
+    total_modules = K_int + K_mem + K_sg
     n_selections = total_modules + 1  # +1 for null module
 
-    # Split keys: K_int integrators + K_mem memories + 1 for selection
     keys = jax.random.split(rng, total_modules + 1)
 
-    # Initialize K_int integrator modules
     integrators = tuple(
         init_integrator_params(keys[i], input_dim, output_dim, h_dim, num_freqs)
         for i in range(K_int)
     )
 
-    # Initialize K_mem memory modules
     memories = tuple(
         init_memory_params(keys[K_int + i], input_dim, output_dim, d_k, d_v)
         for i in range(K_mem)
     )
 
-    # Selection weights (includes null slot if enabled)
-    # Initialize to zeros so softmax gives uniform distribution (1/n_selections) at start
+    sensory_gates = tuple(
+        init_sensory_gate_params(keys[K_int + K_mem + i], input_dim, output_dim, h_dim)
+        for i in range(K_sg)
+    )
+
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
     return ModularParams(
         integrators=integrators,
         memories=memories,
+        sensory_gates=sensory_gates,
         W_sel=W_sel,
         b_sel=b_sel,
     )
