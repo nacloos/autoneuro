@@ -542,8 +542,13 @@ def make_loss_fn(forward_fn):
             mask = (y >= 0).astype(jnp.float32)
             safe_y = jnp.maximum(y, 0).astype(jnp.int32)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
-            target_log_probs = jnp.take_along_axis(log_probs, safe_y[:, None], axis=-1).squeeze(-1)
-            return -jnp.sum(target_log_probs * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+            n_classes = logits.shape[-1]
+            # Label smoothing: mix one-hot with uniform
+            smooth = 0.1
+            one_hot = jax.nn.one_hot(safe_y, n_classes)
+            soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
+            per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
+            return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
 
