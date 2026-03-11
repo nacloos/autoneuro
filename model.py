@@ -142,6 +142,124 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
 
 
 # =============================================================================
+# Module 3: Oscillator (Central Pattern Generator)
+# =============================================================================
+
+@struct.dataclass
+class OscillatorParams:
+    """Parameters for neural oscillator module.
+
+    Inspired by central pattern generators and neural oscillations.
+    State = phase angles that evolve with learned base frequencies
+    plus input-modulated frequency shifts. Useful for timing and
+    rhythm-sensitive tasks.
+
+    θ_{t+1} = θ_t + ω_base + γ_t * (W_freq x_t + b_freq)
+    z_t = [sin(θ_t), cos(θ_t)]
+    y_t = W_out @ z_t
+    """
+    omega_base: jnp.ndarray      # (h_dim,) - base angular frequencies
+    W_freq: jnp.ndarray          # (h_dim, input_dim) - input-to-frequency modulation
+    b_freq: jnp.ndarray          # (h_dim,)
+    w_gamma: jnp.ndarray         # (input_dim,) - gate for frequency modulation
+    b_gamma: jnp.ndarray         # (1,)
+    W_out: jnp.ndarray           # (output_dim, 2*h_dim)
+
+
+def oscillator_step(params: OscillatorParams, state: jnp.ndarray, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Single step of oscillator module.
+
+    Args:
+        params: OscillatorParams
+        state: θ - phase angles (h_dim,)
+        x: input (input_dim,)
+
+    Returns:
+        theta_new: updated phase angles (h_dim,)
+        y: output (output_dim,)
+        gamma: frequency modulation gate (scalar)
+    """
+    theta = state
+
+    # Input-modulated frequency gate
+    gamma = jax.nn.sigmoid(params.w_gamma @ x + params.b_gamma).squeeze()
+
+    # Phase update: base frequency + input-modulated shift
+    freq_shift = params.W_freq @ x + params.b_freq
+    theta_new = theta + params.omega_base + gamma * freq_shift
+
+    # Readout via sin/cos of phase angles
+    z = jnp.concatenate([jnp.sin(theta_new), jnp.cos(theta_new)])
+
+    # Output projection
+    y = params.W_out @ z
+
+    return theta_new, y, gamma
+
+
+# =============================================================================
+# Module 4: Gated Working Memory (Prefrontal cortex-inspired)
+# =============================================================================
+
+@struct.dataclass
+class GatedMemoryParams:
+    """Parameters for gated working memory module.
+
+    Inspired by prefrontal cortex gating theories (O'Reilly & Frank).
+    Separate write, forget, and read gates control access to a
+    maintained hidden state. Unlike LSTM, uses explicit forget and
+    content-based read gating.
+
+    f_t = σ(w_f @ x_t + b_f)           (forget gate)
+    w_t = σ(w_w @ x_t + b_w)           (write gate)
+    c_t = f_t * c_{t-1} + w_t * tanh(W_c x_t + b_c)  (cell state)
+    r_t = σ(w_r @ x_t + b_r)           (read gate)
+    y_t = W_out @ (r_t * tanh(c_t))
+    """
+    W_c: jnp.ndarray             # (h_dim, input_dim) - content transform
+    b_c: jnp.ndarray             # (h_dim,)
+    w_f: jnp.ndarray             # (input_dim,) - forget gate
+    b_f: jnp.ndarray             # (1,)
+    w_w: jnp.ndarray             # (input_dim,) - write gate
+    b_w: jnp.ndarray             # (1,)
+    w_r: jnp.ndarray             # (input_dim,) - read gate
+    b_r: jnp.ndarray             # (1,)
+    W_out: jnp.ndarray           # (output_dim, h_dim)
+
+
+def gated_memory_step(params: GatedMemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Single step of gated working memory module.
+
+    Args:
+        params: GatedMemoryParams
+        state: c - cell state (h_dim,)
+        x: input (input_dim,)
+
+    Returns:
+        c_new: updated cell state (h_dim,)
+        y: output (output_dim,)
+        forget: forget gate value (scalar)
+        write: write gate value (scalar)
+        read: read gate value (scalar)
+    """
+    c = state
+
+    # Gates
+    forget = jax.nn.sigmoid(params.w_f @ x + params.b_f).squeeze()
+    write = jax.nn.sigmoid(params.w_w @ x + params.b_w).squeeze()
+    read = jax.nn.sigmoid(params.w_r @ x + params.b_r).squeeze()
+
+    # Cell update
+    content = jnp.tanh(params.W_c @ x + params.b_c)
+    c_new = forget * c + write * content
+
+    # Gated readout
+    y = params.W_out @ (read * jnp.tanh(c_new))
+
+    return c_new, y, forget, write, read
+
+
+# =============================================================================
 # Combined Modular Model
 # =============================================================================
 
@@ -149,12 +267,15 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
 class ModularParams:
     """Parameters for modular model with configurable modules per type.
 
-    Can have different numbers of each module type (integrator, memory).
+    Can have different numbers of each module type (integrator, memory,
+    oscillator, gated_memory).
     Selection via softmax(W_sel @ x + b_sel).
     Includes a "null" module that outputs zeros (allows skipping all modules).
     """
     integrators: Tuple[IntegratorParams, ...]  # K_int integrator modules
     memories: Tuple[MemoryParams, ...]  # K_mem memory modules
+    oscillators: Tuple[OscillatorParams, ...]  # K_osc oscillator modules
+    gated_memories: Tuple[GatedMemoryParams, ...]  # K_gm gated memory modules
     W_sel: jnp.ndarray  # (n_selections, input_dim) - selection weights (includes null)
     b_sel: jnp.ndarray  # (n_selections,) - selection biases (includes null)
 
@@ -190,21 +311,27 @@ def modular_forward(
 
     K_int = len(params.integrators)
     K_mem = len(params.memories)
-    total_modules = K_int + K_mem
+    K_osc = len(params.oscillators)
+    K_gm = len(params.gated_memories)
+    total_modules = K_int + K_mem + K_osc + K_gm
     if total_modules == 0:
-        raise ValueError("modular_forward requires at least one integrator or memory module")
+        raise ValueError("modular_forward requires at least one module")
 
     # Get dimensions from first module of each type (if exists)
     h_dim = params.integrators[0].W1.shape[0] if K_int > 0 else 0
     d_k_mem = params.memories[0].W_k.shape[0] if K_mem > 0 else 0
     d_v_mem = params.memories[0].W_v.shape[0] if K_mem > 0 else 0
+    osc_dim = params.oscillators[0].omega_base.shape[0] if K_osc > 0 else 0
+    gm_dim = params.gated_memories[0].W_c.shape[0] if K_gm > 0 else 0
 
     def step(states, x):
-        int_states, mem_states = states
+        int_states, mem_states, osc_states, gm_states = states
 
         all_outputs = []
         new_int_states = []
         new_mem_states = []
+        new_osc_states = []
+        new_gm_states = []
 
         # Collect gates if needed (will be concatenated into array)
         gate_values = [] if return_gates else None
@@ -227,7 +354,25 @@ def modular_forward(
             if return_gates:
                 gate_values.append(omega)
 
-        # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
+        # Run all K_osc oscillator modules
+        for i in range(K_osc):
+            theta_new, y, gamma = oscillator_step(params.oscillators[i], osc_states[i], x)
+            new_osc_states.append(theta_new)
+            all_outputs.append(y)
+
+            if return_gates:
+                gate_values.append(gamma)
+
+        # Run all K_gm gated memory modules
+        for i in range(K_gm):
+            c_new, y, f, w, r = gated_memory_step(params.gated_memories[i], gm_states[i], x)
+            new_gm_states.append(c_new)
+            all_outputs.append(y)
+
+            if return_gates:
+                gate_values.extend([f, w, r])
+
+        # Stack outputs: (total_modules, output_dim)
         all_outputs = jnp.stack(all_outputs, axis=0)
 
         # Add null output (zeros) - allows model to "skip" all modules
@@ -244,12 +389,10 @@ def modular_forward(
             safe_temp = jnp.maximum(temperature, 1e-6)
             sel_weights = jax.nn.softmax(sel_logits / safe_temp)  # (n_selections,)
 
-        # Select output (weighted sum with softmax, but since it's selection, use argmax-like behavior)
-        # For hard selection: y = all_outputs[argmax(sel_weights)]
-        # For soft selection (differentiable): y = sel_weights @ all_outputs
+        # Soft selection (differentiable): y = sel_weights @ all_outputs
         y = sel_weights @ all_outputs  # (output_dim,)
 
-        new_states = (new_int_states, new_mem_states)
+        new_states = (new_int_states, new_mem_states, new_osc_states, new_gm_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -257,16 +400,18 @@ def modular_forward(
             return new_states, (y, sel_weights, gates_array)
         else:
             return new_states, (y, sel_weights)
-    
+
     # Initialize states for all modules
     int_states_0 = [jnp.zeros(h_dim) for _ in range(K_int)]
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
-    initial_states = (int_states_0, mem_states_0)
+    osc_states_0 = [jnp.zeros(osc_dim) for _ in range(K_osc)]
+    gm_states_0 = [jnp.zeros(gm_dim) for _ in range(K_gm)]
+    initial_states = (int_states_0, mem_states_0, osc_states_0, gm_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_osc, K_gm)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -274,18 +419,18 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_osc: int = 0, K_gm: int = 0) -> dict:
     """Parse concatenated gate array into named dict.
 
     Args:
-        gate_arrays: (seq_len, total_gates) where total_gates = K_int*2 + K_mem*1
+        gate_arrays: (seq_len, total_gates)
         K_int: Number of integrator modules
         K_mem: Number of memory modules
+        K_osc: Number of oscillator modules
+        K_gm: Number of gated memory modules
 
     Returns:
-        Dict mapping gate names to (seq_len,) arrays:
-        - integrator_{i}_alpha, integrator_{i}_beta for i in 0..K_int-1
-        - memory_{i}_omega for i in 0..K_mem-1
+        Dict mapping gate names to (seq_len,) arrays
     """
     idx = 0
     gates = {}
@@ -300,6 +445,20 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int) -> dict
     # Memory gates: K_mem * omega
     for i in range(K_mem):
         gates[f'mem{i}_omega'] = gate_arrays[:, idx]
+        idx += 1
+
+    # Oscillator gates: K_osc * gamma
+    for i in range(K_osc):
+        gates[f'osc{i}_gamma'] = gate_arrays[:, idx]
+        idx += 1
+
+    # Gated memory gates: K_gm * (forget, write, read)
+    for i in range(K_gm):
+        gates[f'gm{i}_forget'] = gate_arrays[:, idx]
+        idx += 1
+        gates[f'gm{i}_write'] = gate_arrays[:, idx]
+        idx += 1
+        gates[f'gm{i}_read'] = gate_arrays[:, idx]
         idx += 1
 
     return gates
@@ -362,6 +521,50 @@ def init_memory_params(
     )
 
 
+def init_oscillator_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> OscillatorParams:
+    """Initialize oscillator module parameters."""
+    keys = jax.random.split(rng, 4)
+    scale = 0.1
+
+    return OscillatorParams(
+        # Base frequencies spread across a range (learnable)
+        omega_base=jnp.linspace(0.05, 0.5, h_dim),
+        W_freq=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_freq=jnp.zeros(h_dim),
+        w_gamma=jax.random.normal(keys[1], (input_dim,)) * scale,
+        b_gamma=jnp.zeros(1),
+        W_out=jax.random.normal(keys[2], (output_dim, 2 * h_dim)) * scale,
+    )
+
+
+def init_gated_memory_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> GatedMemoryParams:
+    """Initialize gated working memory module parameters."""
+    keys = jax.random.split(rng, 5)
+    scale = 0.1
+
+    return GatedMemoryParams(
+        W_c=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_c=jnp.zeros(h_dim),
+        w_f=jax.random.normal(keys[1], (input_dim,)) * scale,
+        b_f=jnp.ones(1),  # bias toward remembering (forget gate starts high)
+        w_w=jax.random.normal(keys[2], (input_dim,)) * scale,
+        b_w=jnp.zeros(1),
+        w_r=jax.random.normal(keys[3], (input_dim,)) * scale,
+        b_r=jnp.zeros(1),
+        W_out=jax.random.normal(keys[4], (output_dim, h_dim)) * scale,
+    )
+
+
 def init_modular_params(
     rng: jax.Array,
     input_dim: int,
@@ -379,9 +582,10 @@ def init_modular_params(
         input_dim: Input dimension
         output_dim: Output dimension
         K: Number of modules per type. Can be:
-            - int: same number for integrators and memories
-            - tuple: (K_integrator, K_memory)
-        h_dim: Hidden dimension for integrators
+            - int: same number for all module types
+            - tuple of 2: (K_integrator, K_memory) - adds 1 osc + 1 gated_mem
+            - tuple of 4: (K_int, K_mem, K_osc, K_gm)
+        h_dim: Hidden dimension for integrators/oscillators/gated_memory
         d_k: Key dimension for memory
         d_v: Value dimension for memory
         num_freqs: Number of frequencies for positional encoding
@@ -391,38 +595,58 @@ def init_modular_params(
     """
     # Parse K
     if isinstance(K, int):
-        K_int, K_mem = K, K
-    else:
-        if len(K) != 2:
-            raise ValueError(f"K must be int or tuple of length 2, got: {K}")
+        K_int, K_mem, K_osc, K_gm = K, K, 1, 1
+    elif len(K) == 2:
         K_int, K_mem = K
+        K_osc, K_gm = 1, 1  # always add 1 oscillator + 1 gated memory
+    elif len(K) == 4:
+        K_int, K_mem, K_osc, K_gm = K
+    else:
+        raise ValueError(f"K must be int or tuple of length 2 or 4, got: {K}")
 
-    total_modules = K_int + K_mem
+    total_modules = K_int + K_mem + K_osc + K_gm
     n_selections = total_modules + 1  # +1 for null module
 
-    # Split keys: K_int integrators + K_mem memories + 1 for selection
+    # Split keys
     keys = jax.random.split(rng, total_modules + 1)
+    key_idx = 0
 
-    # Initialize K_int integrator modules
+    # Initialize integrator modules
     integrators = tuple(
-        init_integrator_params(keys[i], input_dim, output_dim, h_dim, num_freqs)
+        init_integrator_params(keys[key_idx + i], input_dim, output_dim, h_dim, num_freqs)
         for i in range(K_int)
     )
+    key_idx += K_int
 
-    # Initialize K_mem memory modules
+    # Initialize memory modules
     memories = tuple(
-        init_memory_params(keys[K_int + i], input_dim, output_dim, d_k, d_v)
+        init_memory_params(keys[key_idx + i], input_dim, output_dim, d_k, d_v)
         for i in range(K_mem)
     )
+    key_idx += K_mem
 
-    # Selection weights (includes null slot if enabled)
-    # Initialize to zeros so softmax gives uniform distribution (1/n_selections) at start
+    # Initialize oscillator modules
+    oscillators = tuple(
+        init_oscillator_params(keys[key_idx + i], input_dim, output_dim, h_dim)
+        for i in range(K_osc)
+    )
+    key_idx += K_osc
+
+    # Initialize gated memory modules
+    gated_memories = tuple(
+        init_gated_memory_params(keys[key_idx + i], input_dim, output_dim, h_dim)
+        for i in range(K_gm)
+    )
+
+    # Selection weights - uniform init
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
     return ModularParams(
         integrators=integrators,
         memories=memories,
+        oscillators=oscillators,
+        gated_memories=gated_memories,
         W_sel=W_sel,
         b_sel=b_sel,
     )
