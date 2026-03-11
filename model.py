@@ -152,59 +152,72 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
 
 
 # =============================================================================
-# Module 3: Oscillator (Central Pattern Generator)
+# Module 3: Match/Mismatch Detector (Hippocampal/PFC-inspired)
 # =============================================================================
 
 @struct.dataclass
 class OscillatorParams:
-    """Parameters for neural oscillator module.
+    """Parameters for match/mismatch detector module.
 
-    Inspired by central pattern generators and neural oscillations.
-    State = phase angles that evolve with learned base frequencies
-    plus input-modulated frequency shifts. Useful for timing and
-    rhythm-sensitive tasks.
+    Inspired by hippocampal match enhancement / mismatch suppression
+    and PFC comparison circuits. Stores a reference pattern (gated write)
+    and computes match (element-wise product) and mismatch (element-wise
+    difference) between current input projection and stored reference.
 
-    θ_{t+1} = θ_t + ω_base + γ_t * (W_freq x_t + b_freq)
-    z_t = [sin(θ_t), cos(θ_t)]
+    ref_t = (1-w_t) * ref_{t-1} + w_t * (W_enc x_t + b_enc)
+    probe = W_probe x_t + b_probe
+    match = probe ⊙ ref_t       (element-wise match)
+    mismatch = (probe - ref_t)^2  (squared difference)
+    z_t = [match, mismatch]
     y_t = W_out @ z_t
     """
-    omega_base: jnp.ndarray      # (h_dim,) - base angular frequencies
-    W_freq: jnp.ndarray          # (h_dim, input_dim) - input-to-frequency modulation
-    b_freq: jnp.ndarray          # (h_dim,)
-    w_gamma: jnp.ndarray         # (input_dim,) - gate for frequency modulation
+    W_enc: jnp.ndarray           # (h_dim, input_dim) - encode input to reference
+    b_enc: jnp.ndarray           # (h_dim,)
+    W_probe: jnp.ndarray         # (h_dim, input_dim) - encode input to probe
+    b_probe: jnp.ndarray         # (h_dim,)
+    w_gamma: jnp.ndarray         # (input_dim,) - write gate for reference update
     b_gamma: jnp.ndarray         # (1,)
     W_out: jnp.ndarray           # (output_dim, 2*h_dim)
 
 
 def oscillator_step(params: OscillatorParams, state: jnp.ndarray, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Single step of oscillator module.
+    """Single step of match/mismatch detector.
 
     Args:
-        params: OscillatorParams
-        state: θ - phase angles (h_dim,)
+        params: OscillatorParams (reusing name for compatibility)
+        state: ref - stored reference pattern (h_dim,)
         x: input (input_dim,)
 
     Returns:
-        theta_new: updated phase angles (h_dim,)
+        ref_new: updated reference (h_dim,)
         y: output (output_dim,)
-        gamma: frequency modulation gate (scalar)
+        gamma: write gate value (scalar)
     """
-    theta = state
+    ref = state
 
-    # Input-modulated frequency gate
+    # Write gate: controls reference update
     gamma = jax.nn.sigmoid(params.w_gamma @ x + params.b_gamma).squeeze()
 
-    # Phase update: base frequency + input-modulated shift
-    freq_shift = params.W_freq @ x + params.b_freq
-    theta_new = theta + params.omega_base + gamma * freq_shift
+    # Encode input to reference and probe spaces
+    encoded = jnp.tanh(params.W_enc @ x + params.b_enc)
+    probe = jnp.tanh(params.W_probe @ x + params.b_probe)
 
-    # Readout via sin/cos of phase angles
-    z = jnp.concatenate([jnp.sin(theta_new), jnp.cos(theta_new)])
+    # Update reference (gated leaky integration)
+    ref_new = (1 - gamma) * ref + gamma * encoded
+
+    # Match: element-wise product (high when similar)
+    match = probe * ref_new
+
+    # Mismatch: squared difference (high when different)
+    mismatch = (probe - ref_new) ** 2
+
+    # Concatenate match and mismatch signals
+    z = jnp.concatenate([match, mismatch])
 
     # Output projection
     y = params.W_out @ z
 
-    return theta_new, y, gamma
+    return ref_new, y, gamma
 
 
 # =============================================================================
@@ -331,7 +344,7 @@ def modular_forward(
     h_dim = params.integrators[0].W1.shape[0] if K_int > 0 else 0
     d_k_mem = params.memories[0].W_k.shape[0] if K_mem > 0 else 0
     d_v_mem = params.memories[0].W_v.shape[0] if K_mem > 0 else 0
-    osc_dim = params.oscillators[0].omega_base.shape[0] if K_osc > 0 else 0
+    osc_dim = params.oscillators[0].W_enc.shape[0] if K_osc > 0 else 0
     gm_dim = params.gated_memories[0].W_c.shape[0] if K_gm > 0 else 0
 
     def step(states, x):
@@ -540,18 +553,18 @@ def init_oscillator_params(
     output_dim: int,
     h_dim: int,
 ) -> OscillatorParams:
-    """Initialize oscillator module parameters."""
-    keys = jax.random.split(rng, 4)
+    """Initialize match/mismatch detector parameters."""
+    keys = jax.random.split(rng, 5)
     scale = 0.1
 
     return OscillatorParams(
-        # Base frequencies spread across a range (learnable)
-        omega_base=jnp.linspace(0.05, 0.5, h_dim),
-        W_freq=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
-        b_freq=jnp.zeros(h_dim),
-        w_gamma=jax.random.normal(keys[1], (input_dim,)) * scale,
+        W_enc=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_enc=jnp.zeros(h_dim),
+        W_probe=jax.random.normal(keys[1], (h_dim, input_dim)) * scale,
+        b_probe=jnp.zeros(h_dim),
+        w_gamma=jax.random.normal(keys[2], (input_dim,)) * scale,
         b_gamma=jnp.zeros(1),
-        W_out=jax.random.normal(keys[2], (output_dim, 2 * h_dim)) * scale,
+        W_out=jax.random.normal(keys[3], (output_dim, 2 * h_dim)) * scale,
     )
 
 
