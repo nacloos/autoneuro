@@ -69,8 +69,8 @@ def integrator_step(params: IntegratorParams, state: jnp.ndarray, x: jnp.ndarray
     alpha = jax.nn.sigmoid(params.w_alpha @ x + params.b_alpha).squeeze()
     beta = jax.nn.sigmoid(params.w_beta @ x + params.b_beta).squeeze()
 
-    # Integrator update with lateral recurrence
-    h_new = (1 - alpha) * h + alpha * (params.W1 @ x + params.b1) + beta * (params.W2 @ x + params.b2) + params.W_rec @ jnp.tanh(h)
+    # Integrator update (no lateral recurrence)
+    h_new = (1 - alpha) * h + alpha * (params.W1 @ x + params.b1) + beta * (params.W2 @ x + params.b2)
 
     # Multi-frequency positional encoding
     h_scaled = h_new[:, None] * params.freqs[None, :]  # (h_dim, num_freqs)
