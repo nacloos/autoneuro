@@ -92,7 +92,7 @@ class TrainConfig:
     concat_input: bool = False  # Concatenate input embedding with block output at each layer
 
     # Label smoothing for cross-entropy loss
-    label_smoothing: float = 0.15
+    label_smoothing: float = 0.1
 
     # Simulated annealing for selection softmax temperature
     # temperature = tau_base + tau_scale * prev_batch_loss
