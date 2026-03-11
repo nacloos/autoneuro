@@ -28,16 +28,19 @@ class ModelSpec:
 
 @struct.dataclass
 class IntegratorParams:
-    """Parameters for integrator module.
-    
-    h_{t+1} = (1-α_t) h_t + α_t (W_1 x_t + b_1) + β_t (W_2 x_t + b_2)
+    """Parameters for integrator module with lateral recurrence.
+
+    h_{t+1} = (1-α_t) h_t + α_t (W_1 x_t + b_1) + β_t (W_2 x_t + b_2) + W_rec tanh(h_t)
     z_t = [sin(h_t * freqs), cos(h_t * freqs)]
     y_t = W_out @ z_t
+
+    W_rec provides lateral recurrent connections (inspired by cortical circuits).
     """
     W1: jnp.ndarray              # (h_dim, input_dim)
     b1: jnp.ndarray              # (h_dim,)
     W2: jnp.ndarray              # (h_dim, input_dim)
     b2: jnp.ndarray              # (h_dim,)
+    W_rec: jnp.ndarray           # (h_dim, h_dim) - lateral recurrence
     w_alpha: jnp.ndarray         # (input_dim,)
     b_alpha: jnp.ndarray         # (1,)
     w_beta: jnp.ndarray          # (input_dim,)
@@ -66,8 +69,8 @@ def integrator_step(params: IntegratorParams, state: jnp.ndarray, x: jnp.ndarray
     alpha = jax.nn.sigmoid(params.w_alpha @ x + params.b_alpha).squeeze()
     beta = jax.nn.sigmoid(params.w_beta @ x + params.b_beta).squeeze()
 
-    # Integrator update
-    h_new = (1 - alpha) * h + alpha * (params.W1 @ x + params.b1) + beta * (params.W2 @ x + params.b2)
+    # Integrator update with lateral recurrence
+    h_new = (1 - alpha) * h + alpha * (params.W1 @ x + params.b1) + beta * (params.W2 @ x + params.b2) + params.W_rec @ jnp.tanh(h)
 
     # Multi-frequency positional encoding
     h_scaled = h_new[:, None] * params.freqs[None, :]  # (h_dim, num_freqs)
@@ -85,11 +88,12 @@ def integrator_step(params: IntegratorParams, state: jnp.ndarray, x: jnp.ndarray
 
 @struct.dataclass
 class MemoryParams:
-    """Parameters for memory module (keys from x).
-    
+    """Parameters for memory module with synaptic decay.
+
     k_t = normalize(W_k x_t)
     v_t = W_v x_t, q_t = normalize(W_q x_t)
-    S_t = S_{t-1} - ω_t (S_{t-1} k_t - v_t) k_t^T
+    δ_t = σ(w_decay @ x_t + b_decay)  (decay/forget gate)
+    S_t = δ_t * S_{t-1} - ω_t (S_{t-1} k_t - v_t) k_t^T
     m_t = S_t q_t
     y_t = W_out @ m_t
     """
@@ -98,6 +102,8 @@ class MemoryParams:
     W_q: jnp.ndarray             # (d_k, input_dim)
     w_omega: jnp.ndarray         # (input_dim,)
     b_omega: jnp.ndarray         # (1,)
+    w_decay: jnp.ndarray         # (input_dim,) - synaptic decay gate
+    b_decay: jnp.ndarray         # (1,)
     W_out: jnp.ndarray           # (output_dim, d_v)
 
 
@@ -128,9 +134,13 @@ def memory_step(params: MemoryParams, state: jnp.ndarray, x: jnp.ndarray) -> Tup
     # Write gate
     omega = jax.nn.sigmoid(params.w_omega @ x + params.b_omega).squeeze()
 
-    # Delta rule update
-    error = S @ k - v
-    S_new = S - omega * jnp.outer(error, k)
+    # Synaptic decay gate (inspired by synaptic depression)
+    decay = jax.nn.sigmoid(params.w_decay @ x + params.b_decay).squeeze()
+
+    # Delta rule update with decay
+    S_decayed = decay * S
+    error = S_decayed @ k - v
+    S_new = S_decayed - omega * jnp.outer(error, k)
 
     # Read
     m = S_new @ q
@@ -482,15 +492,16 @@ def init_integrator_params(
     num_freqs: int,
 ) -> IntegratorParams:
     """Initialize integrator module parameters."""
-    keys = jax.random.split(rng, 6)
+    keys = jax.random.split(rng, 7)
     scale = 0.1
     z_dim = 2 * h_dim * num_freqs
-    
+
     return IntegratorParams(
         W1=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
         b1=jnp.zeros(h_dim),
         W2=jax.random.normal(keys[1], (h_dim, input_dim)) * scale,
         b2=jnp.zeros(h_dim),
+        W_rec=jax.random.normal(keys[5], (h_dim, h_dim)) * 0.01,  # small init for stability
         w_alpha=jax.random.normal(keys[2], (input_dim,)) * scale,
         b_alpha=jnp.zeros(1),
         w_beta=jax.random.normal(keys[3], (input_dim,)) * scale,
@@ -508,15 +519,17 @@ def init_memory_params(
     d_v: int,
 ) -> MemoryParams:
     """Initialize memory module parameters."""
-    keys = jax.random.split(rng, 5)
+    keys = jax.random.split(rng, 6)
     scale = 0.1
-    
+
     return MemoryParams(
         W_k=jax.random.normal(keys[0], (d_k, input_dim)) * scale,
         W_v=jax.random.normal(keys[1], (d_v, input_dim)) * scale,
         W_q=jax.random.normal(keys[2], (d_k, input_dim)) * scale,
         w_omega=jax.random.normal(keys[3], (input_dim,)) * scale,
         b_omega=jnp.zeros(1),
+        w_decay=jax.random.normal(keys[5], (input_dim,)) * scale,
+        b_decay=jnp.ones(1) * 2.0,  # bias toward high decay (≈0.88) = strong retention
         W_out=jax.random.normal(keys[4], (output_dim, d_v)) * scale,
     )
 

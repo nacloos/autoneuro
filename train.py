@@ -564,7 +564,7 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    optimizer = optax.adam(config.lr)
+    optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(config.lr))
     # optimizer = optax.contrib.muon(config.lr)
     # optimizer = optax.sgd(config.lr)
     opt_state = optimizer.init(params)
