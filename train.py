@@ -310,37 +310,60 @@ def make_dataset(rng, tasks: List[TaskConfig], n_samples_per_task: int, num_work
     return np.stack(X_all), np.stack(Y_all), meta, input_dim, total_classes
 
 
-def compute_accuracy(spec, params, X, Y, meta=None, rng=None):
-    """Compute accuracy on response positions only.
+def compute_accuracy(spec, params, X, Y, meta=None, rng=None, eval_batch_size=256):
+    """Compute accuracy on response positions only, in batches to avoid OOM.
 
     For yang tasks: only count timesteps where target is a direction (Y > 0)
     For discrete tasks: count timesteps where Y >= 0
     """
     if rng is None:
         rng = jax.random.PRNGKey(0)
-    rngs = jax.random.split(rng, X.shape[0])
-    logits = jax.vmap(lambda x, r: spec.apply(params, x, r))(X, rngs)
-    preds = jnp.argmax(logits, axis=-1)
 
-    # Build mask based on task type
-    if meta is not None:
-        # Per-sample mask based on task type
-        masks = []
-        for i, m in enumerate(meta):
-            if m['output_group'] == 'yang':
-                # Yang tasks: only response period where target is a direction (not fixation)
-                # Y > 0 means target is a direction (classes 1-16), not fixation (class 0)
-                mask_i = Y[i] > 0
-            else:
-                # Discrete tasks: where target is valid
-                mask_i = Y[i] >= 0
-            masks.append(mask_i)
-        mask = jnp.stack(masks)
-    else:
-        # Fallback: use Y >= 0
-        mask = Y >= 0
+    n = X.shape[0]
+    total_correct = 0
+    total_count = 0
 
-    return float(jnp.sum((preds == Y) & mask) / jnp.sum(mask))
+    for start in range(0, n, eval_batch_size):
+        end = min(start + eval_batch_size, n)
+        X_batch = jnp.array(X[start:end])
+        Y_batch = jnp.array(Y[start:end])
+        rng, batch_rng = jax.random.split(rng)
+        rngs = jax.random.split(batch_rng, end - start)
+        logits = jax.vmap(lambda x, r: spec.apply(params, x, r))(X_batch, rngs)
+        preds = jnp.argmax(logits, axis=-1)
+
+        # Build mask based on task type
+        if meta is not None:
+            masks = []
+            for i in range(start, end):
+                m = meta[i]
+                if m['output_group'] == 'yang':
+                    mask_i = Y_batch[i - start] > 0
+                else:
+                    mask_i = Y_batch[i - start] >= 0
+                masks.append(mask_i)
+            mask = jnp.stack(masks)
+        else:
+            mask = Y_batch >= 0
+
+        total_correct += int(jnp.sum((preds == Y_batch) & mask))
+        total_count += int(jnp.sum(mask))
+
+    return total_correct / max(total_count, 1)
+
+
+def batched_loss(spec, params, X, Y, rng, eval_batch_size=256):
+    """Compute loss in batches to avoid OOM."""
+    n = X.shape[0]
+    total_loss = 0.0
+    n_batches = 0
+    for start in range(0, n, eval_batch_size):
+        end = min(start + eval_batch_size, n)
+        rng, batch_rng = jax.random.split(rng)
+        batch_loss = float(spec.loss(params, jnp.array(X[start:end]), jnp.array(Y[start:end]), rng=batch_rng))
+        total_loss += batch_loss
+        n_batches += 1
+    return total_loss / max(n_batches, 1)
 
 
 def plot_nav_predictions(spec, params, X, Y, meta, filepath, task_name, sample_idx=0, n_samples=5):
@@ -656,12 +679,12 @@ def train_model(
 
         if stop_requested or epoch % config.eval_interval == 0 or epoch == config.n_epochs - 1:
             rng, eval_rng1, eval_rng2, acc_rng1, acc_rng2 = jax.random.split(rng, 5)
-            # Convert evaluation slices to JAX arrays
-            train_loss = float(spec.loss(params, jnp.array(X_train[:500]), jnp.array(Y_train[:500]), rng=eval_rng1))
-            test_loss = float(spec.loss(params, jnp.array(X_test), jnp.array(Y_test), rng=eval_rng2))
+            # Batched evaluation to avoid OOM
+            train_loss = batched_loss(spec, params, X_train[:500], Y_train[:500], rng=eval_rng1)
+            test_loss = batched_loss(spec, params, X_test, Y_test, rng=eval_rng2)
             meta_train_slice = meta_train[:500] if meta_train else None
-            train_acc = compute_accuracy(spec, params, jnp.array(X_train[:500]), jnp.array(Y_train[:500]), meta_train_slice, rng=acc_rng1)
-            test_acc = compute_accuracy(spec, params, jnp.array(X_test), jnp.array(Y_test), meta_test, rng=acc_rng2)
+            train_acc = compute_accuracy(spec, params, X_train[:500], Y_train[:500], meta_train_slice, rng=acc_rng1)
+            test_acc = compute_accuracy(spec, params, X_test, Y_test, meta_test, rng=acc_rng2)
 
             history['epochs'].append(epoch)
             history['steps'].append(global_step)
