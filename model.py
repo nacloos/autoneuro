@@ -768,7 +768,7 @@ def make_sequence_model_forward_with_gates(
     return forward_with_gates
 
 
-def make_loss_fn(forward_fn):
+def make_loss_fn(forward_fn, label_smoothing: float = 0.0):
     """Create a jitted loss function for the given forward function."""
 
     @jax.jit
@@ -781,8 +781,16 @@ def make_loss_fn(forward_fn):
             mask = (y >= 0).astype(jnp.float32)
             safe_y = jnp.maximum(y, 0).astype(jnp.int32)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
-            target_log_probs = jnp.take_along_axis(log_probs, safe_y[:, None], axis=-1).squeeze(-1)
-            return -jnp.sum(target_log_probs * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+            if label_smoothing > 0:
+                n_classes = logits.shape[-1]
+                # Smooth target: (1-eps) on correct class + eps/n_classes uniform
+                target_log_probs = jnp.take_along_axis(log_probs, safe_y[:, None], axis=-1).squeeze(-1)
+                smooth_loss = -((1.0 - label_smoothing) * target_log_probs + label_smoothing * jnp.mean(log_probs, axis=-1))
+                return jnp.sum(smooth_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+            else:
+                target_log_probs = jnp.take_along_axis(log_probs, safe_y[:, None], axis=-1).squeeze(-1)
+                return -jnp.sum(target_log_probs * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
 
@@ -805,6 +813,7 @@ def make_sequence_model_spec(
     routings=None,
     shared_weights=False,
     concat_input=False,
+    label_smoothing=0.0,
 ):
     """Create ModelSpec for stacked modular blocks."""
 
@@ -886,6 +895,6 @@ def make_sequence_model_spec(
         routings=routings,
         concat_input=concat_input,
     )
-    loss = make_loss_fn(apply)
+    loss = make_loss_fn(apply, label_smoothing=label_smoothing)
 
     return ModelSpec(init=init, apply=apply, loss=loss, apply_with_gates=apply_with_gates)

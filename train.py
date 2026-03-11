@@ -91,6 +91,9 @@ class TrainConfig:
     shared_weights: bool = False  # Share block weights across layers
     concat_input: bool = False  # Concatenate input embedding with block output at each layer
 
+    # Label smoothing for cross-entropy loss
+    label_smoothing: float = 0.1
+
     # Simulated annealing for selection softmax temperature
     # temperature = tau_base + tau_scale * prev_batch_loss
     # Disabled by default (tau_scale=0 -> temperature=1.0)
@@ -194,6 +197,7 @@ def get_models(vocab_size, config: TrainConfig = DEFAULT_CONFIG, input_type='dis
             routings=routings,
             shared_weights=config.shared_weights,
             concat_input=config.concat_input,
+            label_smoothing=config.label_smoothing,
         ),
     }
 
