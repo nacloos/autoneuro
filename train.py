@@ -214,8 +214,25 @@ def _generate_task_data(args):
     return task_idx, X_raw, Y_raw, task_meta
 
 
+DATASET_CACHE_DIR = SCRIPT_DIR / ".dataset_cache"
+DATASET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+import hashlib
+import pickle
+
+def _dataset_cache_key(rng, tasks, n_samples_per_task):
+    """Compute a hash key for dataset caching."""
+    # Use rng bits directly as seed identifier (no side effects)
+    seed_val = int(rng[0]) ^ int(rng[1])
+    parts = [str(seed_val), str(n_samples_per_task)]
+    for t in tasks:
+        parts.append(f"{t.name}:{t.input_dim}:{t.output_dim}:{t.seq_len}:{t.input_type}:{t.output_group}:{t.condition_filter}")
+    key_str = "|".join(parts)
+    return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+
+
 def make_dataset(rng, tasks: List[TaskConfig], n_samples_per_task: int, num_workers: int = 0):
-    """Generate standardized dataset from task list.
+    """Generate standardized dataset from task list (with disk caching).
 
     Tasks with same output_group share output classes.
     Different groups get separate class ranges with offsets.
@@ -235,6 +252,13 @@ def make_dataset(rng, tasks: List[TaskConfig], n_samples_per_task: int, num_work
         input_dim: total input dimension (max_input_dim + n_tasks)
         total_classes: total number of output classes
     """
+    # Check cache
+    cache_key = _dataset_cache_key(rng, tasks, n_samples_per_task)
+    cache_path = DATASET_CACHE_DIR / f"{cache_key}.pkl"
+    if cache_path.exists():
+        print(f"Loading cached dataset from {cache_path.name}", flush=True)
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
     n_tasks = len(tasks)
     max_input_dim = max(t.input_dim for t in tasks)
     max_seq_len = max(t.seq_len for t in tasks)
@@ -307,7 +331,17 @@ def make_dataset(rng, tasks: List[TaskConfig], n_samples_per_task: int, num_work
             meta.append(sample_meta)
 
     # Return numpy arrays (convert to JAX in run_task)
-    return np.stack(X_all), np.stack(Y_all), meta, input_dim, total_classes
+    result = (np.stack(X_all), np.stack(Y_all), meta, input_dim, total_classes)
+
+    # Save to cache
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"Cached dataset to {cache_path.name}", flush=True)
+    except Exception as e:
+        print(f"Warning: could not cache dataset: {e}", flush=True)
+
+    return result
 
 
 def compute_accuracy(spec, params, X, Y, meta=None, rng=None):
