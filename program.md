@@ -2,6 +2,12 @@
 
 This is an experiment to have the LLM do its own research.
 
+## Research question
+
+Find a brain-inspired modular architecture that learns the yang tasks extremely efficienly (generalizes from few training samples).
+Two modules are already provided: integrator, associative memory. Keep them. Work on adding complementary modules that help with learning efficiency.
+
+
 ## Setup
 
 To set up a new experiment, work with the user to:
