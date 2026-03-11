@@ -1032,14 +1032,43 @@ def run_task(tasks: List[TaskConfig], config: TrainConfig = DEFAULT_CONFIG, mode
     # Use test_tasks if provided, otherwise use same as train
     if test_tasks is None:
         test_tasks = tasks
-    
+
     n_per_task = config.n_train_samples // len(tasks)
-    X_train, Y_train, meta_train, input_dim, output_dim = make_dataset(
-        jax.random.PRNGKey(0), tasks, n_per_task, num_workers=num_workers
-    )
-    X_test, Y_test, meta_test, _, _ = make_dataset(
-        jax.random.PRNGKey(1), test_tasks, config.n_test_samples // len(test_tasks), num_workers=num_workers
-    )
+
+    # Dataset caching: save/load from disk to avoid regenerating each run
+    cache_dir = SCRIPT_DIR / "cached_data"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    import hashlib, json as _json, pickle
+    cache_key_data = _json.dumps({
+        "train_tasks": [(t.name, t.condition_filter) for t in tasks],
+        "test_tasks": [(t.name, t.condition_filter) for t in test_tasks],
+        "n_per_task": n_per_task,
+        "n_test_per_task": config.n_test_samples // len(test_tasks),
+    }, sort_keys=True)
+    cache_hash = hashlib.md5(cache_key_data.encode()).hexdigest()[:12]
+    cache_file = cache_dir / f"dataset_{cache_hash}.pkl"
+
+    if cache_file.exists():
+        print(f"Loading cached dataset from {cache_file}")
+        with open(cache_file, "rb") as f:
+            cached = pickle.load(f)
+        X_train, Y_train, meta_train = cached["X_train"], cached["Y_train"], cached["meta_train"]
+        X_test, Y_test, meta_test = cached["X_test"], cached["Y_test"], cached["meta_test"]
+        input_dim, output_dim = cached["input_dim"], cached["output_dim"]
+    else:
+        X_train, Y_train, meta_train, input_dim, output_dim = make_dataset(
+            jax.random.PRNGKey(0), tasks, n_per_task, num_workers=num_workers
+        )
+        X_test, Y_test, meta_test, _, _ = make_dataset(
+            jax.random.PRNGKey(1), test_tasks, config.n_test_samples // len(test_tasks), num_workers=num_workers
+        )
+        print(f"Caching dataset to {cache_file}")
+        with open(cache_file, "wb") as f:
+            pickle.dump({
+                "X_train": X_train, "Y_train": Y_train, "meta_train": meta_train,
+                "X_test": X_test, "Y_test": Y_test, "meta_test": meta_test,
+                "input_dim": input_dim, "output_dim": output_dim,
+            }, f)
 
     # Keep datasets as NumPy arrays - only convert batches to JAX during training
     # X_train, Y_train = jnp.array(X_train), jnp.array(Y_train)
