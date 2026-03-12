@@ -553,7 +553,10 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    optimizer = optax.adamw(config.lr, weight_decay=2e-2)
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(config.lr, weight_decay=2e-2),
+    )
     opt_state = optimizer.init(params)
 
     @jax.jit
