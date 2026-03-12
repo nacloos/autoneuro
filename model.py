@@ -418,6 +418,7 @@ class ModularParams:
     b_sel: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
     b_gain: jnp.ndarray  # (total_modules,)
+    log_sigma: jnp.ndarray  # (1,) - learnable divisive normalization sigma
 
 
 def modular_forward(
@@ -561,8 +562,8 @@ def modular_forward(
         y = sel_weights @ all_outputs  # (output_dim,)
 
         # Divisive normalization: canonical neural computation for contrast invariance
-        # y / (sigma + ||y||) where sigma is a semi-saturation constant
-        sigma = 1.0
+        # y / (sigma + ||y||) where sigma is a learnable semi-saturation constant
+        sigma = jnp.exp(params.log_sigma).squeeze()  # always positive
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
         new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_res_states)
@@ -892,6 +893,9 @@ def init_modular_params(
     W_gain = jnp.zeros((total_modules, input_dim))
     b_gain = jnp.full(total_modules, 2.0)
 
+    # Learnable sigma for divisive normalization (init to log(1)=0)
+    log_sigma = jnp.zeros(1)
+
     return ModularParams(
         integrators=integrators,
         memories=memories,
@@ -904,6 +908,7 @@ def init_modular_params(
         b_sel=b_sel,
         W_gain=W_gain,
         b_gain=b_gain,
+        log_sigma=log_sigma,
     )
 
 
