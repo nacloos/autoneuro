@@ -70,7 +70,7 @@ class TrainConfig:
 
     # Training
     n_epochs: int = 200
-    batch_size: int = 64
+    batch_size: int = 32
     lr: float = 1e-3
     seed: int = 42
     max_train_steps: Optional[int] = None  # Optional exact optimizer-update budget (stops mid-epoch if reached)

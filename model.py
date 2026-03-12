@@ -487,7 +487,11 @@ def modular_forward(
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
         all_outputs = all_outputs * gain[:, None]  # scale each module output
 
-        # Selection over all modules (no null module - force active routing)
+        # Add null output (zeros) - allows model to "skip" all modules
+        null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
+        all_outputs = jnp.concatenate([all_outputs, null_output[None, :]], axis=0)
+
+        # Selection over all modules + null
         if routing is not None:
             # Fixed routing: use provided weights directly
             sel_weights = routing  # (n_selections,)
@@ -761,7 +765,7 @@ def init_modular_params(
     K_cmp = 1  # Always add 1 comparator module
     K_res = 1  # Always add 1 reservoir module
     total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_res
-    n_selections = total_modules  # no null module
+    n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
 
