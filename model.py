@@ -317,7 +317,50 @@ def comparator_step(params: ComparatorParams, state, x: jnp.ndarray):
 
 
 # =============================================================================
-# Module 6: Reservoir / Echo State Network
+# Module 6: GRU (Gated Recurrent Unit)
+# =============================================================================
+
+@struct.dataclass
+class GRUParams:
+    """Parameters for GRU module.
+
+    Inspired by ionic channel dynamics in neurons - update and reset
+    gates control information flow analogous to voltage-gated channels.
+
+    z_t = sigmoid(W_z @ [h_{t-1}, x_t])   -- update gate
+    r_t = sigmoid(W_r @ [h_{t-1}, x_t])   -- reset gate
+    h_hat = tanh(W_h @ [r_t * h_{t-1}, x_t]) -- candidate
+    h_t = (1 - z_t) * h_{t-1} + z_t * h_hat  -- update
+    y_t = W_out @ h_t
+    """
+    W_z: jnp.ndarray      # (h_dim, h_dim + input_dim) - update gate
+    b_z: jnp.ndarray      # (h_dim,)
+    W_r: jnp.ndarray      # (h_dim, h_dim + input_dim) - reset gate
+    b_r: jnp.ndarray      # (h_dim,)
+    W_h: jnp.ndarray      # (h_dim, h_dim + input_dim) - candidate
+    b_h: jnp.ndarray      # (h_dim,)
+    W_out: jnp.ndarray    # (output_dim, h_dim)
+
+
+def gru_step(params: GRUParams, state: jnp.ndarray, x: jnp.ndarray):
+    """Single step of GRU module."""
+    h = state
+    hx = jnp.concatenate([h, x])
+
+    z = jax.nn.sigmoid(params.W_z @ hx + params.b_z)   # update gate
+    r = jax.nn.sigmoid(params.W_r @ hx + params.b_r)   # reset gate
+
+    rhx = jnp.concatenate([r * h, x])
+    h_hat = jnp.tanh(params.W_h @ rhx + params.b_h)    # candidate
+
+    h_new = (1 - z) * h + z * h_hat                     # update
+    y = params.W_out @ h_new
+
+    return h_new, y, jnp.mean(z)  # return mean update gate as diagnostic
+
+
+# =============================================================================
+# Module 7: Reservoir / Echo State Network
 # =============================================================================
 
 @struct.dataclass
@@ -369,6 +412,7 @@ class ModularParams:
     sensory_gates: Tuple[SensoryGateParams, ...]
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
     comparators: Tuple[ComparatorParams, ...]
+    grus: Tuple[GRUParams, ...]
     reservoirs: Tuple[ReservoirParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
@@ -410,8 +454,9 @@ def modular_forward(
     K_sg = len(params.sensory_gates)
     K_li = len(params.lateral_inhibitions)
     K_cmp = len(params.comparators)
+    K_gru = len(params.grus)
     K_res = len(params.reservoirs)
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -422,10 +467,11 @@ def modular_forward(
     sg_dim = params.sensory_gates[0].W_g.shape[0] if K_sg > 0 else 0
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
     cmp_dim = params.comparators[0].W_ref.shape[0] if K_cmp > 0 else 0
+    gru_dim = params.grus[0].W_z.shape[0] if K_gru > 0 else 0
     res_dim = params.reservoirs[0].W_rec.shape[0] if K_res > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states, cmp_states, res_states = states
+        int_states, mem_states, sg_states, li_states, cmp_states, gru_states, res_states = states
 
         all_outputs = []
         new_int_states = []
@@ -433,6 +479,7 @@ def modular_forward(
         new_sg_states = []
         new_li_states = []
         new_cmp_states = []
+        new_gru_states = []
         new_res_states = []
 
         gate_values = [] if return_gates else None
@@ -471,6 +518,13 @@ def modular_forward(
             all_outputs.append(y)
             if return_gates:
                 gate_values.append(omega)
+
+        for i in range(K_gru):
+            h_new, y, z_mean = gru_step(params.grus[i], gru_states[i], x)
+            new_gru_states.append(h_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(z_mean)
 
         for i in range(K_res):
             h_new, y, leak = reservoir_step(params.reservoirs[i], res_states[i], x)
@@ -511,7 +565,7 @@ def modular_forward(
         sigma = 1.0
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_res_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_res_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -527,13 +581,14 @@ def modular_forward(
     li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
     # Comparator state: (ref, h) where ref is (h_dim,) and h is (2*h_dim,)
     cmp_states_0 = [(jnp.zeros(cmp_dim), jnp.zeros(2 * cmp_dim)) for _ in range(K_cmp)]
+    gru_states_0 = [jnp.zeros(gru_dim) for _ in range(K_gru)]
     res_states_0 = [jnp.zeros(res_dim) for _ in range(K_res)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, res_states_0)
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, gru_states_0, res_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_res)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_gru, K_res)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -541,7 +596,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_res: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_gru: int = 0, K_res: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -566,6 +621,10 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_cmp):
         gates[f'cmp{i}_omega'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_gru):
+        gates[f'gru{i}_z'] = gate_arrays[:, idx]
         idx += 1
 
     for i in range(K_res):
@@ -671,6 +730,27 @@ def init_lateral_inhibition_params(
     )
 
 
+def init_gru_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> GRUParams:
+    """Initialize GRU module parameters."""
+    keys = jax.random.split(rng, 4)
+    scale = 0.1
+    cat_dim = h_dim + input_dim
+    return GRUParams(
+        W_z=jax.random.normal(keys[0], (h_dim, cat_dim)) * scale,
+        b_z=jnp.zeros(h_dim),
+        W_r=jax.random.normal(keys[1], (h_dim, cat_dim)) * scale,
+        b_r=jnp.zeros(h_dim),
+        W_h=jax.random.normal(keys[2], (h_dim, cat_dim)) * scale,
+        b_h=jnp.zeros(h_dim),
+        W_out=jax.random.normal(keys[3], (output_dim, h_dim)) * scale,
+    )
+
+
 def init_reservoir_params(
     rng: jax.Array,
     input_dim: int,
@@ -763,8 +843,9 @@ def init_modular_params(
     K_sg = 1  # Always add 1 sensory gating module
     K_li = 1  # Always add 1 lateral inhibition module
     K_cmp = 1  # Always add 1 comparator module
+    K_gru = 1  # Always add 1 GRU module
     K_res = 1  # Always add 1 reservoir module
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -794,8 +875,13 @@ def init_modular_params(
         for i in range(K_cmp)
     )
 
+    grus = tuple(
+        init_gru_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + i], input_dim, output_dim, h_dim)
+        for i in range(K_gru)
+    )
+
     reservoirs = tuple(
-        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + i], input_dim, output_dim, h_dim)
+        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_gru + i], input_dim, output_dim, h_dim)
         for i in range(K_res)
     )
 
@@ -812,6 +898,7 @@ def init_modular_params(
         sensory_gates=sensory_gates,
         lateral_inhibitions=lateral_inhibitions,
         comparators=comparators,
+        grus=grus,
         reservoirs=reservoirs,
         W_sel=W_sel,
         b_sel=b_sel,
