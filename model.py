@@ -847,7 +847,7 @@ def init_modular_params(
 
     K_sg = 1  # Always add 1 sensory gating module
     K_li = 1  # Always add 1 lateral inhibition module
-    K_cmp = 2  # Add 2 comparator modules
+    K_cmp = 1  # Always add 1 comparator module
     K_gru = 1  # Always add 1 GRU module
     K_res = 1  # Always add 1 reservoir module
     total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
@@ -1036,7 +1036,7 @@ def make_loss_fn(forward_fn):
             log_probs = jax.nn.log_softmax(logits, axis=-1)
             n_classes = logits.shape[-1]
             # Label smoothing: mix one-hot with uniform
-            smooth = 0.1
+            smooth = 0.05
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
