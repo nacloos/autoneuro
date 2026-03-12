@@ -553,10 +553,7 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(config.lr, weight_decay=2e-2),
-    )
+    optimizer = optax.adamw(config.lr, weight_decay=2e-2)
     opt_state = optimizer.init(params)
 
     @jax.jit
@@ -666,8 +663,12 @@ def train_model(
             # Convert batch to JAX arrays just before use
             x_batch = jnp.array(X_shuf[i:i+config.batch_size])
             y_batch = jnp.array(Y_shuf[i:i+config.batch_size])
-            # Compute temperature from previous batch loss
-            temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(1.0)
+            # Linear temperature decay: start warm (2.0), end cool (0.3) to sharpen routing
+            max_steps = config.max_train_steps if config.max_train_steps else 5000
+            frac = jnp.clip(global_step / max_steps, 0.0, 1.0)
+            temperature = jnp.float32(2.0 * (1.0 - frac) + 0.3 * frac)
+            if use_annealing:
+                temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss)
             params, opt_state, batch_loss = train_step(
                 params, opt_state, x_batch, y_batch, step_rng, temperature
             )
