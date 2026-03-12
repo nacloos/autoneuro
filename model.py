@@ -266,6 +266,7 @@ class ModularParams:
     Module types: integrator, memory, sensory_gate, lateral_inhibition.
     Selection via softmax(W_sel @ x + b_sel).
     Includes a "null" module that outputs zeros (allows skipping all modules).
+    Neuromodulatory gain: per-module scalar that scales output (like dopamine/NE).
     """
     integrators: Tuple[IntegratorParams, ...]
     memories: Tuple[MemoryParams, ...]
@@ -273,6 +274,8 @@ class ModularParams:
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
+    W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
+    b_gain: jnp.ndarray  # (total_modules,)
 
 
 def modular_forward(
@@ -360,6 +363,11 @@ def modular_forward(
 
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
+
+        # Neuromodulatory gain: context-dependent scaling per module
+        # Inspired by dopamine/norepinephrine modulation of cortical circuits
+        gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
+        all_outputs = all_outputs * gain[:, None]  # scale each module output
 
         # Add null output (zeros) - allows model to "skip" all modules
         null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
@@ -594,6 +602,10 @@ def init_modular_params(
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
+    # Neuromodulatory gain: initialized to bias=2 so sigmoid(2)≈0.88 (near 1, minimal effect initially)
+    W_gain = jnp.zeros((total_modules, input_dim))
+    b_gain = jnp.full(total_modules, 2.0)
+
     return ModularParams(
         integrators=integrators,
         memories=memories,
@@ -601,6 +613,8 @@ def init_modular_params(
         lateral_inhibitions=lateral_inhibitions,
         W_sel=W_sel,
         b_sel=b_sel,
+        W_gain=W_gain,
+        b_gain=b_gain,
     )
 
 
