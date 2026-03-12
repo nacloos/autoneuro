@@ -323,7 +323,7 @@ def modular_forward(
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states = states
+        int_states, mem_states, sg_states, li_states, fatigue = states
 
         all_outputs = []
         new_int_states = []
@@ -369,6 +369,15 @@ def modular_forward(
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
         all_outputs = all_outputs * gain[:, None]  # scale each module output
 
+        # Short-term synaptic depression: recently active modules are temporarily weakened
+        # Inspired by presynaptic vesicle depletion / neural adaptation
+        depression_factor = 1.0 / (1.0 + fatigue)  # (total_modules,)
+        all_outputs = all_outputs * depression_factor[:, None]
+        # Update fatigue: accumulate based on output magnitude, decay exponentially
+        output_energy = jnp.sum(all_outputs ** 2, axis=1)  # (total_modules,)
+        fatigue_decay = 0.9  # controls recovery time constant
+        fatigue_new = fatigue_decay * fatigue + 0.1 * output_energy
+
         # Add null output (zeros) - allows model to "skip" all modules
         null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
         all_outputs = jnp.concatenate([all_outputs, null_output[None, :]], axis=0)
@@ -393,7 +402,7 @@ def modular_forward(
         sigma = 1.0
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, fatigue_new)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -407,7 +416,8 @@ def modular_forward(
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
     sg_states_0 = [jnp.zeros(sg_dim) for _ in range(K_sg)]
     li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0)
+    fatigue_0 = jnp.zeros(total_modules)
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, fatigue_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
