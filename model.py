@@ -317,60 +317,7 @@ def comparator_step(params: ComparatorParams, state, x: jnp.ndarray):
 
 
 # =============================================================================
-# Module 6: Predictive Coding
-# =============================================================================
-
-@struct.dataclass
-class PredictiveCodingParams:
-    """Parameters for predictive coding module.
-
-    Inspired by the predictive processing framework in cortex (Rao & Ballard 1999).
-    The module maintains an internal prediction of the current input. The
-    prediction error (mismatch between prediction and actual input) drives
-    learning and is the primary output signal. This is a core theory of
-    cortical computation.
-
-    pred_t = W_pred @ h_{t-1} + b_pred                    -- predict current input
-    err_t = W_enc @ x_t - pred_t                           -- prediction error
-    h_t = (1 - λ) * h_{t-1} + λ * ReLU(W_h @ err_t + b_h) -- update state from error
-    y_t = W_out @ h_t
-    """
-    W_pred: jnp.ndarray      # (enc_dim, h_dim) - generate prediction
-    b_pred: jnp.ndarray      # (enc_dim,)
-    W_enc: jnp.ndarray       # (enc_dim, input_dim) - encode input
-    W_h: jnp.ndarray         # (h_dim, enc_dim) - error to state
-    b_h: jnp.ndarray         # (h_dim,)
-    w_lam: jnp.ndarray       # (input_dim,) - integration rate
-    b_lam: jnp.ndarray       # (1,)
-    W_out: jnp.ndarray       # (output_dim, h_dim)
-
-
-def predictive_coding_step(params: PredictiveCodingParams, state: jnp.ndarray, x: jnp.ndarray):
-    """Single step of predictive coding module."""
-    h = state
-
-    # Generate prediction of current input encoding
-    pred = params.W_pred @ h + params.b_pred
-
-    # Encode actual input
-    enc = params.W_enc @ x
-
-    # Prediction error
-    err = enc - pred
-
-    # Update state from prediction error
-    lam = jax.nn.sigmoid(params.w_lam @ x + params.b_lam).squeeze()
-    h_update = jax.nn.relu(params.W_h @ err + params.b_h)
-    h_new = (1 - lam) * h + lam * h_update
-
-    # Output
-    y = params.W_out @ h_new
-
-    return h_new, y, lam
-
-
-# =============================================================================
-# Module 7: Reservoir / Echo State Network
+# Module 6: Reservoir / Echo State Network
 # =============================================================================
 
 @struct.dataclass
@@ -422,7 +369,6 @@ class ModularParams:
     sensory_gates: Tuple[SensoryGateParams, ...]
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
     comparators: Tuple[ComparatorParams, ...]
-    predictive_coders: Tuple[PredictiveCodingParams, ...]
     reservoirs: Tuple[ReservoirParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
@@ -464,9 +410,8 @@ def modular_forward(
     K_sg = len(params.sensory_gates)
     K_li = len(params.lateral_inhibitions)
     K_cmp = len(params.comparators)
-    K_pc = len(params.predictive_coders)
     K_res = len(params.reservoirs)
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_pc + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_res
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -477,11 +422,10 @@ def modular_forward(
     sg_dim = params.sensory_gates[0].W_g.shape[0] if K_sg > 0 else 0
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
     cmp_dim = params.comparators[0].W_ref.shape[0] if K_cmp > 0 else 0
-    pc_dim = params.predictive_coders[0].W_h.shape[0] if K_pc > 0 else 0
     res_dim = params.reservoirs[0].W_rec.shape[0] if K_res > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states, cmp_states, pc_states, res_states = states
+        int_states, mem_states, sg_states, li_states, cmp_states, res_states = states
 
         all_outputs = []
         new_int_states = []
@@ -489,7 +433,6 @@ def modular_forward(
         new_sg_states = []
         new_li_states = []
         new_cmp_states = []
-        new_pc_states = []
         new_res_states = []
 
         gate_values = [] if return_gates else None
@@ -528,13 +471,6 @@ def modular_forward(
             all_outputs.append(y)
             if return_gates:
                 gate_values.append(omega)
-
-        for i in range(K_pc):
-            h_new, y, lam = predictive_coding_step(params.predictive_coders[i], pc_states[i], x)
-            new_pc_states.append(h_new)
-            all_outputs.append(y)
-            if return_gates:
-                gate_values.append(lam)
 
         for i in range(K_res):
             h_new, y, leak = reservoir_step(params.reservoirs[i], res_states[i], x)
@@ -575,7 +511,7 @@ def modular_forward(
         sigma = 1.0
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_pc_states, new_res_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_res_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -591,14 +527,13 @@ def modular_forward(
     li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
     # Comparator state: (ref, h) where ref is (h_dim,) and h is (2*h_dim,)
     cmp_states_0 = [(jnp.zeros(cmp_dim), jnp.zeros(2 * cmp_dim)) for _ in range(K_cmp)]
-    pc_states_0 = [jnp.zeros(pc_dim) for _ in range(K_pc)]
     res_states_0 = [jnp.zeros(res_dim) for _ in range(K_res)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, pc_states_0, res_states_0)
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, res_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_pc, K_res)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_res)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -606,7 +541,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_pc: int = 0, K_res: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_res: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -631,10 +566,6 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_cmp):
         gates[f'cmp{i}_omega'] = gate_arrays[:, idx]
-        idx += 1
-
-    for i in range(K_pc):
-        gates[f'pc{i}_lambda'] = gate_arrays[:, idx]
         idx += 1
 
     for i in range(K_res):
@@ -740,30 +671,6 @@ def init_lateral_inhibition_params(
     )
 
 
-def init_predictive_coding_params(
-    rng: jax.Array,
-    input_dim: int,
-    output_dim: int,
-    h_dim: int,
-    enc_dim: int = None,
-) -> PredictiveCodingParams:
-    """Initialize predictive coding module parameters."""
-    if enc_dim is None:
-        enc_dim = h_dim
-    keys = jax.random.split(rng, 5)
-    scale = 0.1
-    return PredictiveCodingParams(
-        W_pred=jax.random.normal(keys[0], (enc_dim, h_dim)) * scale,
-        b_pred=jnp.zeros(enc_dim),
-        W_enc=jax.random.normal(keys[1], (enc_dim, input_dim)) * scale,
-        W_h=jax.random.normal(keys[2], (h_dim, enc_dim)) * scale,
-        b_h=jnp.zeros(h_dim),
-        w_lam=jax.random.normal(keys[3], (input_dim,)) * scale,
-        b_lam=jnp.zeros(1),
-        W_out=jax.random.normal(keys[4], (output_dim, h_dim)) * scale,
-    )
-
-
 def init_reservoir_params(
     rng: jax.Array,
     input_dim: int,
@@ -856,9 +763,8 @@ def init_modular_params(
     K_sg = 1  # Always add 1 sensory gating module
     K_li = 1  # Always add 1 lateral inhibition module
     K_cmp = 1  # Always add 1 comparator module
-    K_pc = 1   # Always add 1 predictive coding module
     K_res = 1  # Always add 1 reservoir module
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_pc + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_res
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -888,13 +794,8 @@ def init_modular_params(
         for i in range(K_cmp)
     )
 
-    predictive_coders = tuple(
-        init_predictive_coding_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + i], input_dim, output_dim, h_dim)
-        for i in range(K_pc)
-    )
-
     reservoirs = tuple(
-        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_pc + i], input_dim, output_dim, h_dim)
+        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + i], input_dim, output_dim, h_dim)
         for i in range(K_res)
     )
 
@@ -911,7 +812,6 @@ def init_modular_params(
         sensory_gates=sensory_gates,
         lateral_inhibitions=lateral_inhibitions,
         comparators=comparators,
-        predictive_coders=predictive_coders,
         reservoirs=reservoirs,
         W_sel=W_sel,
         b_sel=b_sel,
