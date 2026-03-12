@@ -81,7 +81,7 @@ class TrainConfig:
 
     # Model
     embed_dim: int = 256
-    hidden_dim: int = 384
+    hidden_dim: int = 256
 
     d_k: int = 64  # KV memory key dim
     d_v: int = 64  # KV memory value dim
