@@ -272,8 +272,10 @@ class ModularParams:
     memories: Tuple[MemoryParams, ...]
     sensory_gates: Tuple[SensoryGateParams, ...]
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
-    W_sel: jnp.ndarray  # (n_selections, input_dim)
-    b_sel: jnp.ndarray  # (n_selections,)
+    W_sel1: jnp.ndarray  # (sel_hidden, input_dim) - routing MLP layer 1
+    b_sel1: jnp.ndarray  # (sel_hidden,)
+    W_sel2: jnp.ndarray  # (n_selections, sel_hidden) - routing MLP layer 2
+    b_sel2: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
     b_gain: jnp.ndarray  # (total_modules,)
 
@@ -378,8 +380,9 @@ def modular_forward(
             # Fixed routing: use provided weights directly
             sel_weights = routing  # (n_selections,)
         else:
-            # Learned routing: softmax over logits (with temperature for annealing)
-            sel_logits = params.W_sel @ x + params.b_sel  # (n_selections,)
+            # Learned routing: 2-layer MLP for richer task/context-dependent selection
+            h_sel = jax.nn.relu(params.W_sel1 @ x + params.b_sel1)
+            sel_logits = params.W_sel2 @ h_sel + params.b_sel2  # (n_selections,)
             safe_temp = jnp.maximum(temperature, 1e-6)
             sel_weights = jax.nn.softmax(sel_logits / safe_temp)  # (n_selections,)
 
@@ -604,8 +607,12 @@ def init_modular_params(
         for i in range(K_li)
     )
 
-    W_sel = jnp.zeros((n_selections, input_dim))
-    b_sel = jnp.zeros(n_selections)
+    sel_hidden = 64  # routing MLP hidden dimension
+    key_sel = jax.random.split(keys[-1], 2)
+    W_sel1 = jax.random.normal(key_sel[0], (sel_hidden, input_dim)) * 0.1
+    b_sel1 = jnp.zeros(sel_hidden)
+    W_sel2 = jnp.zeros((n_selections, sel_hidden))
+    b_sel2 = jnp.zeros(n_selections)
 
     # Neuromodulatory gain: initialized to bias=2 so sigmoid(2)≈0.88 (near 1, minimal effect initially)
     W_gain = jnp.zeros((total_modules, input_dim))
@@ -616,8 +623,10 @@ def init_modular_params(
         memories=memories,
         sensory_gates=sensory_gates,
         lateral_inhibitions=lateral_inhibitions,
-        W_sel=W_sel,
-        b_sel=b_sel,
+        W_sel1=W_sel1,
+        b_sel1=b_sel1,
+        W_sel2=W_sel2,
+        b_sel2=b_sel2,
         W_gain=W_gain,
         b_gain=b_gain,
     )
