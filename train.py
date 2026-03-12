@@ -71,7 +71,7 @@ class TrainConfig:
     # Training
     n_epochs: int = 200
     batch_size: int = 64
-    lr: float = 5e-4
+    lr: float = 1e-3
     seed: int = 42
     max_train_steps: Optional[int] = None  # Optional exact optimizer-update budget (stops mid-epoch if reached)
 
@@ -80,7 +80,7 @@ class TrainConfig:
     n_test_samples: int = 1000
 
     # Model
-    embed_dim: int = 256
+    embed_dim: int = 128
     hidden_dim: int = 256
 
     d_k: int = 64  # KV memory key dim
