@@ -374,7 +374,6 @@ class ModularParams:
     b_sel: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
     b_gain: jnp.ndarray  # (total_modules,)
-    W_cross: jnp.ndarray  # (total_modules, total_modules) - cross-module communication
 
 
 def modular_forward(
@@ -487,13 +486,6 @@ def modular_forward(
         # Inspired by dopamine/norepinephrine modulation of cortical circuits
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
         all_outputs = all_outputs * gain[:, None]  # scale each module output
-
-        # Cross-module communication: modules can modulate each other
-        # Inspired by cortico-cortical connections between brain areas
-        # Softmax attention weights between modules, then residual update
-        cross_attn = jax.nn.softmax(params.W_cross, axis=1)  # (total_modules, total_modules)
-        cross_output = cross_attn @ all_outputs  # (total_modules, output_dim)
-        all_outputs = all_outputs + 0.1 * cross_output  # residual with small weight
 
         # Add null output (zeros) - allows model to "skip" all modules
         null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
@@ -814,9 +806,6 @@ def init_modular_params(
     W_gain = jnp.zeros((total_modules, input_dim))
     b_gain = jnp.full(total_modules, 2.0)
 
-    # Cross-module communication: init to identity (each module mostly sees itself)
-    W_cross = jnp.eye(total_modules) * 5.0  # softmax(5*I) ≈ identity
-
     return ModularParams(
         integrators=integrators,
         memories=memories,
@@ -828,7 +817,6 @@ def init_modular_params(
         b_sel=b_sel,
         W_gain=W_gain,
         b_gain=b_gain,
-        W_cross=W_cross,
     )
 
 
