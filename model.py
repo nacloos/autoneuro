@@ -256,6 +256,67 @@ def lateral_inhibition_step(params: LateralInhibitionParams, state: jnp.ndarray,
 
 
 # =============================================================================
+# Module 5: Comparator (match/mismatch detection)
+# =============================================================================
+
+@struct.dataclass
+class ComparatorParams:
+    """Parameters for comparator module.
+
+    Inspired by prefrontal comparator circuits that detect match/mismatch
+    between current input and a stored reference. Essential for
+    match-to-sample, delayed comparison, and context-dependent tasks.
+
+    ref_t = (1 - ω_t) * ref_{t-1} + ω_t * (W_ref @ x_t + b_ref)  -- update reference
+    cur_t = W_cur @ x_t + b_cur                                     -- current encoding
+    match_t = cur_t * ref_t                                          -- element-wise match
+    diff_t = cur_t - ref_t                                           -- element-wise diff
+    h_t = (1 - λ) * h_{t-1} + λ * [match; diff]                    -- integrate comparison
+    y_t = W_out @ h_t
+    """
+    W_ref: jnp.ndarray       # (h_dim, input_dim) - reference encoding
+    b_ref: jnp.ndarray       # (h_dim,)
+    W_cur: jnp.ndarray       # (h_dim, input_dim) - current encoding
+    b_cur: jnp.ndarray       # (h_dim,)
+    w_omega: jnp.ndarray     # (input_dim,) - reference update gate
+    b_omega: jnp.ndarray     # (1,)
+    w_lam: jnp.ndarray       # (input_dim,) - integration rate
+    b_lam: jnp.ndarray       # (1,)
+    W_out: jnp.ndarray       # (output_dim, 2*h_dim) - reads from [match; diff]
+
+
+def comparator_step(params: ComparatorParams, state, x: jnp.ndarray):
+    """Single step of comparator module.
+
+    State is (ref, h) where ref is the stored reference and h is the
+    integrated comparison signal.
+    """
+    ref, h = state
+
+    # Update reference (gated accumulation)
+    omega = jax.nn.sigmoid(params.w_omega @ x + params.b_omega).squeeze()
+    ref_input = params.W_ref @ x + params.b_ref
+    ref_new = (1 - omega) * ref + omega * ref_input
+
+    # Current encoding
+    cur = params.W_cur @ x + params.b_cur
+
+    # Comparison signals
+    match = cur * ref_new           # element-wise similarity (high when aligned)
+    diff = cur - ref_new            # element-wise difference (high when mismatched)
+    comparison = jnp.concatenate([match, diff])  # (2*h_dim,)
+
+    # Integration
+    lam = jax.nn.sigmoid(params.w_lam @ x + params.b_lam).squeeze()
+    h_new = (1 - lam) * h + lam * comparison
+
+    # Output
+    y = params.W_out @ h_new
+
+    return (ref_new, h_new), y, omega
+
+
+# =============================================================================
 # Combined Modular Model
 # =============================================================================
 
@@ -272,6 +333,7 @@ class ModularParams:
     memories: Tuple[MemoryParams, ...]
     sensory_gates: Tuple[SensoryGateParams, ...]
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
+    comparators: Tuple[ComparatorParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
@@ -311,7 +373,8 @@ def modular_forward(
     K_mem = len(params.memories)
     K_sg = len(params.sensory_gates)
     K_li = len(params.lateral_inhibitions)
-    total_modules = K_int + K_mem + K_sg + K_li
+    K_cmp = len(params.comparators)
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -321,15 +384,17 @@ def modular_forward(
     d_v_mem = params.memories[0].W_v.shape[0] if K_mem > 0 else 0
     sg_dim = params.sensory_gates[0].W_g.shape[0] if K_sg > 0 else 0
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
+    cmp_dim = params.comparators[0].W_ref.shape[0] if K_cmp > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states = states
+        int_states, mem_states, sg_states, li_states, cmp_states = states
 
         all_outputs = []
         new_int_states = []
         new_mem_states = []
         new_sg_states = []
         new_li_states = []
+        new_cmp_states = []
 
         gate_values = [] if return_gates else None
 
@@ -360,6 +425,13 @@ def modular_forward(
             all_outputs.append(y)
             if return_gates:
                 gate_values.append(lam)
+
+        for i in range(K_cmp):
+            state_new, y, omega = comparator_step(params.comparators[i], cmp_states[i], x)
+            new_cmp_states.append(state_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(omega)
 
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
@@ -393,7 +465,7 @@ def modular_forward(
         sigma = 1.0
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -407,12 +479,14 @@ def modular_forward(
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
     sg_states_0 = [jnp.zeros(sg_dim) for _ in range(K_sg)]
     li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0)
+    # Comparator state: (ref, h) where ref is (h_dim,) and h is (2*h_dim,)
+    cmp_states_0 = [(jnp.zeros(cmp_dim), jnp.zeros(2 * cmp_dim)) for _ in range(K_cmp)]
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -420,7 +494,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -441,6 +515,10 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_li):
         gates[f'li{i}_lambda'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_cmp):
+        gates[f'cmp{i}_omega'] = gate_arrays[:, idx]
         idx += 1
 
     return gates
@@ -542,6 +620,28 @@ def init_lateral_inhibition_params(
     )
 
 
+def init_comparator_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> ComparatorParams:
+    """Initialize comparator module parameters."""
+    keys = jax.random.split(rng, 5)
+    scale = 0.1
+    return ComparatorParams(
+        W_ref=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_ref=jnp.zeros(h_dim),
+        W_cur=jax.random.normal(keys[1], (h_dim, input_dim)) * scale,
+        b_cur=jnp.zeros(h_dim),
+        w_omega=jax.random.normal(keys[2], (input_dim,)) * scale,
+        b_omega=jnp.zeros(1),
+        w_lam=jax.random.normal(keys[3], (input_dim,)) * scale,
+        b_lam=jnp.zeros(1),
+        W_out=jax.random.normal(keys[4], (output_dim, 2 * h_dim)) * scale,
+    )
+
+
 def init_modular_params(
     rng: jax.Array,
     input_dim: int,
@@ -579,7 +679,8 @@ def init_modular_params(
 
     K_sg = 1  # Always add 1 sensory gating module
     K_li = 1  # Always add 1 lateral inhibition module
-    total_modules = K_int + K_mem + K_sg + K_li
+    K_cmp = 1  # Always add 1 comparator module
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -604,6 +705,11 @@ def init_modular_params(
         for i in range(K_li)
     )
 
+    comparators = tuple(
+        init_comparator_params(keys[K_int + K_mem + K_sg + K_li + i], input_dim, output_dim, h_dim)
+        for i in range(K_cmp)
+    )
+
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
@@ -616,6 +722,7 @@ def init_modular_params(
         memories=memories,
         sensory_gates=sensory_gates,
         lateral_inhibitions=lateral_inhibitions,
+        comparators=comparators,
         W_sel=W_sel,
         b_sel=b_sel,
         W_gain=W_gain,
