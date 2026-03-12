@@ -276,6 +276,8 @@ class ModularParams:
     b_sel: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
     b_gain: jnp.ndarray  # (total_modules,)
+    phase_freq: jnp.ndarray  # (total_modules,) - oscillatory frequency per module
+    phase_amp: jnp.ndarray   # (total_modules,) - oscillatory amplitude (learned)
 
 
 def modular_forward(
@@ -323,7 +325,7 @@ def modular_forward(
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states = states
+        int_states, mem_states, sg_states, li_states, phase = states
 
         all_outputs = []
         new_int_states = []
@@ -369,6 +371,15 @@ def modular_forward(
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
         all_outputs = all_outputs * gain[:, None]  # scale each module output
 
+        # Oscillatory phase gating: theta/gamma rhythm modulation
+        # Each module has a learned oscillation frequency; the oscillatory signal
+        # modulates when modules are active vs suppressed (read/write phases)
+        phase_new = phase + jax.nn.softplus(params.phase_freq)  # advance phase (positive freq)
+        osc_gate = 0.5 + 0.5 * jnp.sin(phase_new)  # maps sin to [0, 1]
+        amp = jax.nn.sigmoid(params.phase_amp)  # learned amplitude in [0,1]
+        osc_mod = 1.0 - amp + amp * osc_gate  # interpolate: 1.0 when amp=0, osc_gate when amp=1
+        all_outputs = all_outputs * osc_mod[:, None]
+
         # Add null output (zeros) - allows model to "skip" all modules
         null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
         all_outputs = jnp.concatenate([all_outputs, null_output[None, :]], axis=0)
@@ -393,7 +404,7 @@ def modular_forward(
         sigma = 1.0
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, phase_new)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -407,7 +418,8 @@ def modular_forward(
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
     sg_states_0 = [jnp.zeros(sg_dim) for _ in range(K_sg)]
     li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0)
+    phase_0 = jnp.zeros(total_modules)
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, phase_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
@@ -611,6 +623,12 @@ def init_modular_params(
     W_gain = jnp.zeros((total_modules, input_dim))
     b_gain = jnp.full(total_modules, 2.0)
 
+    # Oscillatory phase gating: different frequencies per module (initialized spread across range)
+    # softplus(phase_freq) gives positive frequencies; init to give periods ~5-20 steps
+    phase_freq = jnp.linspace(0.3, 1.2, total_modules)  # different freq per module
+    # amplitude starts near 0 (sigmoid(-2)≈0.12) so oscillation has minimal initial effect
+    phase_amp = jnp.full(total_modules, -2.0)
+
     return ModularParams(
         integrators=integrators,
         memories=memories,
@@ -620,6 +638,8 @@ def init_modular_params(
         b_sel=b_sel,
         W_gain=W_gain,
         b_gain=b_gain,
+        phase_freq=phase_freq,
+        phase_amp=phase_amp,
     )
 
 
