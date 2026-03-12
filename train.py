@@ -553,17 +553,7 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    # Cosine LR schedule with warmup
-    warmup_steps = 200
-    total_steps = config.max_train_steps if config.max_train_steps else 5000
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=1e-5,
-        peak_value=config.lr,
-        warmup_steps=warmup_steps,
-        decay_steps=total_steps,
-        end_value=config.lr * 0.01,
-    )
-    optimizer = optax.adamw(schedule, weight_decay=2e-2)
+    optimizer = optax.adamw(config.lr, weight_decay=2e-2)
     opt_state = optimizer.init(params)
 
     @jax.jit
