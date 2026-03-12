@@ -388,6 +388,11 @@ def modular_forward(
         # For soft selection (differentiable): y = sel_weights @ all_outputs
         y = sel_weights @ all_outputs  # (output_dim,)
 
+        # Divisive normalization: canonical neural computation for contrast invariance
+        # y / (sigma + ||y||) where sigma is a semi-saturation constant
+        sigma = 1.0
+        y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
+
         new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states)
 
         if return_gates:
