@@ -202,6 +202,60 @@ def sensory_gate_step(params: SensoryGateParams, state: jnp.ndarray, x: jnp.ndar
 
 
 # =============================================================================
+# Module 4: Lateral Inhibition (cortical competition)
+# =============================================================================
+
+@struct.dataclass
+class LateralInhibitionParams:
+    """Parameters for lateral inhibition module.
+
+    Inspired by winner-take-all dynamics in cortical columns.
+    Excitatory input drives hidden units, then lateral inhibition
+    suppresses weakly active units, creating sparse task-selective
+    representations.
+
+    e_t = ReLU(W_e @ x_t + b_e)             -- excitation
+    inh_t = W_inh @ e_t                      -- lateral inhibition (learned)
+    a_t = ReLU(e_t - inh_t)                  -- post-inhibition activity (sparse)
+    h_t = (1 - λ_t) * h_{t-1} + λ_t * a_t   -- temporal integration
+    y_t = W_out @ h_t
+    """
+    W_e: jnp.ndarray          # (h_dim, input_dim) - excitatory weights
+    b_e: jnp.ndarray          # (h_dim,)
+    W_inh: jnp.ndarray        # (h_dim, h_dim) - lateral inhibition (off-diagonal)
+    w_lam: jnp.ndarray        # (input_dim,) - integration rate
+    b_lam: jnp.ndarray        # (1,)
+    W_out: jnp.ndarray        # (output_dim, h_dim)
+
+
+def lateral_inhibition_step(params: LateralInhibitionParams, state: jnp.ndarray, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Single step of lateral inhibition module."""
+    h = state
+
+    # Excitatory drive
+    e = jax.nn.relu(params.W_e @ x + params.b_e)
+
+    # Lateral inhibition: suppress weakly active units
+    # Use abs to ensure inhibitory effect, zero diagonal to prevent self-inhibition
+    W_inh_masked = params.W_inh * (1.0 - jnp.eye(params.W_inh.shape[0]))
+    inh = jax.nn.relu(W_inh_masked) @ e  # positive inhibition only
+
+    # Post-inhibition sparse activity
+    a = jax.nn.relu(e - inh)
+
+    # Integration rate
+    lam = jax.nn.sigmoid(params.w_lam @ x + params.b_lam).squeeze()
+
+    # Temporal smoothing
+    h_new = (1 - lam) * h + lam * a
+
+    # Output
+    y = params.W_out @ h_new
+
+    return h_new, y, lam
+
+
+# =============================================================================
 # Combined Modular Model
 # =============================================================================
 
@@ -209,13 +263,14 @@ def sensory_gate_step(params: SensoryGateParams, state: jnp.ndarray, x: jnp.ndar
 class ModularParams:
     """Parameters for modular model with configurable modules per type.
 
-    Module types: integrator, memory, sensory_gate.
+    Module types: integrator, memory, sensory_gate, lateral_inhibition.
     Selection via softmax(W_sel @ x + b_sel).
     Includes a "null" module that outputs zeros (allows skipping all modules).
     """
     integrators: Tuple[IntegratorParams, ...]
     memories: Tuple[MemoryParams, ...]
     sensory_gates: Tuple[SensoryGateParams, ...]
+    lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
 
@@ -252,7 +307,8 @@ def modular_forward(
     K_int = len(params.integrators)
     K_mem = len(params.memories)
     K_sg = len(params.sensory_gates)
-    total_modules = K_int + K_mem + K_sg
+    K_li = len(params.lateral_inhibitions)
+    total_modules = K_int + K_mem + K_sg + K_li
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -261,14 +317,16 @@ def modular_forward(
     d_k_mem = params.memories[0].W_k.shape[0] if K_mem > 0 else 0
     d_v_mem = params.memories[0].W_v.shape[0] if K_mem > 0 else 0
     sg_dim = params.sensory_gates[0].W_g.shape[0] if K_sg > 0 else 0
+    li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states = states
+        int_states, mem_states, sg_states, li_states = states
 
         all_outputs = []
         new_int_states = []
         new_mem_states = []
         new_sg_states = []
+        new_li_states = []
 
         gate_values = [] if return_gates else None
 
@@ -289,6 +347,13 @@ def modular_forward(
         for i in range(K_sg):
             h_new, y, lam = sensory_gate_step(params.sensory_gates[i], sg_states[i], x)
             new_sg_states.append(h_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(lam)
+
+        for i in range(K_li):
+            h_new, y, lam = lateral_inhibition_step(params.lateral_inhibitions[i], li_states[i], x)
+            new_li_states.append(h_new)
             all_outputs.append(y)
             if return_gates:
                 gate_values.append(lam)
@@ -315,7 +380,7 @@ def modular_forward(
         # For soft selection (differentiable): y = sel_weights @ all_outputs
         y = sel_weights @ all_outputs  # (output_dim,)
 
-        new_states = (new_int_states, new_mem_states, new_sg_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -328,12 +393,13 @@ def modular_forward(
     int_states_0 = [jnp.zeros(h_dim) for _ in range(K_int)]
     mem_states_0 = [jnp.zeros((d_v_mem, d_k_mem)) for _ in range(K_mem)]
     sg_states_0 = [jnp.zeros(sg_dim) for _ in range(K_sg)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0)
+    li_states_0 = [jnp.zeros(li_dim) for _ in range(K_li)]
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -341,7 +407,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -358,6 +424,10 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_sg):
         gates[f'sg{i}_lambda'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_li):
+        gates[f'li{i}_lambda'] = gate_arrays[:, idx]
         idx += 1
 
     return gates
@@ -440,6 +510,25 @@ def init_sensory_gate_params(
     )
 
 
+def init_lateral_inhibition_params(
+    rng: jax.Array,
+    input_dim: int,
+    output_dim: int,
+    h_dim: int,
+) -> LateralInhibitionParams:
+    """Initialize lateral inhibition module parameters."""
+    keys = jax.random.split(rng, 4)
+    scale = 0.1
+    return LateralInhibitionParams(
+        W_e=jax.random.normal(keys[0], (h_dim, input_dim)) * scale,
+        b_e=jnp.zeros(h_dim),
+        W_inh=jax.random.normal(keys[1], (h_dim, h_dim)) * (scale * 0.5),
+        w_lam=jax.random.normal(keys[2], (input_dim,)) * scale,
+        b_lam=jnp.zeros(1),
+        W_out=jax.random.normal(keys[3], (output_dim, h_dim)) * scale,
+    )
+
+
 def init_modular_params(
     rng: jax.Array,
     input_dim: int,
@@ -476,7 +565,8 @@ def init_modular_params(
         K_int, K_mem = K
 
     K_sg = 1  # Always add 1 sensory gating module
-    total_modules = K_int + K_mem + K_sg
+    K_li = 1  # Always add 1 lateral inhibition module
+    total_modules = K_int + K_mem + K_sg + K_li
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -496,6 +586,11 @@ def init_modular_params(
         for i in range(K_sg)
     )
 
+    lateral_inhibitions = tuple(
+        init_lateral_inhibition_params(keys[K_int + K_mem + K_sg + i], input_dim, output_dim, h_dim)
+        for i in range(K_li)
+    )
+
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
@@ -503,6 +598,7 @@ def init_modular_params(
         integrators=integrators,
         memories=memories,
         sensory_gates=sensory_gates,
+        lateral_inhibitions=lateral_inhibitions,
         W_sel=W_sel,
         b_sel=b_sel,
     )
