@@ -966,7 +966,7 @@ def make_sequence_model_forward(
                 block_out = hidden + block_out
             if concat_input:
                 cat = jnp.concatenate([input_embed, block_out], axis=-1)
-                hidden = jnp.tanh(cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks])
+                hidden = cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks]
             else:
                 hidden = block_out
 
@@ -1010,7 +1010,7 @@ def make_sequence_model_forward_with_gates(
                 block_out = hidden + block_out
             if concat_input:
                 cat = jnp.concatenate([input_embed, block_out], axis=-1)
-                hidden = jnp.tanh(cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks])
+                hidden = cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks]
             else:
                 hidden = block_out
             all_layer_gates[f"layer{layer_idx}"] = layer_gates
@@ -1034,12 +1034,17 @@ def make_loss_fn(forward_fn):
             mask = (y >= 0).astype(jnp.float32)
             safe_y = jnp.maximum(y, 0).astype(jnp.int32)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
+            probs = jax.nn.softmax(logits, axis=-1)
             n_classes = logits.shape[-1]
             # Label smoothing: mix one-hot with uniform
             smooth = 0.1
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
-            per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
+            # Focal loss: (1-p_t)^gamma * CE, focuses on hard examples
+            gamma = 2.0
+            p_t = jnp.sum(probs * one_hot, axis=-1)  # probability of true class
+            focal_weight = (1.0 - p_t) ** gamma
+            per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1) * focal_weight
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
