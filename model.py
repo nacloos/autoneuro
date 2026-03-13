@@ -970,6 +970,10 @@ def make_sequence_model_forward(
             else:
                 hidden = block_out
 
+        # LayerNorm before output projection
+        h_mean = jnp.mean(hidden, axis=-1, keepdims=True)
+        h_var = jnp.var(hidden, axis=-1, keepdims=True)
+        hidden = (hidden - h_mean) / jnp.sqrt(h_var + 1e-5)
         logits = hidden @ params.W_out.T + params.b_out
         return logits
 
@@ -1015,6 +1019,10 @@ def make_sequence_model_forward_with_gates(
                 hidden = block_out
             all_layer_gates[f"layer{layer_idx}"] = layer_gates
 
+        # LayerNorm before output projection
+        h_mean = jnp.mean(hidden, axis=-1, keepdims=True)
+        h_var = jnp.var(hidden, axis=-1, keepdims=True)
+        hidden = (hidden - h_mean) / jnp.sqrt(h_var + 1e-5)
         logits = hidden @ params.W_out.T + params.b_out
         return logits, all_layer_gates
 
@@ -1041,7 +1049,7 @@ def make_loss_fn(forward_fn):
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
-            logit_penalty = 7e-4 * jnp.mean(logits ** 2, axis=-1)
+            logit_penalty = 5e-4 * jnp.mean(logits ** 2, axis=-1)
             per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
