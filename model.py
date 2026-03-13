@@ -539,6 +539,13 @@ def modular_forward(
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
 
+        # Per-module layer normalization before routing
+        def layer_norm(y):
+            mean = jnp.mean(y)
+            var = jnp.var(y)
+            return (y - mean) / jnp.sqrt(var + 1e-6)
+        all_outputs = jax.vmap(layer_norm)(all_outputs)
+
         # Neuromodulatory gain: context-dependent scaling per module
         # Inspired by dopamine/norepinephrine modulation of cortical circuits
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
