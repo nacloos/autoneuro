@@ -659,11 +659,9 @@ def train_model(
 
         stop_requested = False
         for i in range(0, len(X_train), config.batch_size):
-            rng, step_rng, noise_rng = jax.random.split(rng, 3)
+            rng, step_rng = jax.random.split(rng)
             # Convert batch to JAX arrays just before use
             x_batch = jnp.array(X_shuf[i:i+config.batch_size])
-            # Gaussian noise augmentation (input noise regularization)
-            x_batch = x_batch + 0.05 * jax.random.normal(noise_rng, x_batch.shape)
             y_batch = jnp.array(Y_shuf[i:i+config.batch_size])
             # Compute temperature from previous batch loss
             temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(1.0)
