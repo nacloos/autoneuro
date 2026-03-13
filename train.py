@@ -87,7 +87,7 @@ class TrainConfig:
     d_v: int = 64  # KV memory value dim
     K: str = "1"  # Number of modules: "K" or "K_int,K_mem"
     n_layers: int = 1  # Number of stacked blocks
-    residual: bool = False  # Enable residual connections around each block
+    residual: bool = True  # Enable residual connections around each block
     shared_weights: bool = False  # Share block weights across layers
     concat_input: bool = False  # Concatenate input embedding with block output at each layer
 
