@@ -539,13 +539,6 @@ def modular_forward(
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
 
-        # Per-module layer normalization before routing
-        def layer_norm(y):
-            mean = jnp.mean(y)
-            var = jnp.var(y)
-            return (y - mean) / jnp.sqrt(var + 1e-6)
-        all_outputs = jax.vmap(layer_norm)(all_outputs)
-
         # Neuromodulatory gain: context-dependent scaling per module
         # Inspired by dopamine/norepinephrine modulation of cortical circuits
         gain = jax.nn.sigmoid(params.W_gain @ x + params.b_gain)  # (total_modules,)
@@ -1048,7 +1041,7 @@ def make_loss_fn(forward_fn):
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
-            logit_penalty = 5e-4 * jnp.mean(logits ** 2, axis=-1)
+            logit_penalty = 4e-4 * jnp.mean(logits ** 2, axis=-1)
             per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
