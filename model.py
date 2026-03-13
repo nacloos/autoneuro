@@ -818,7 +818,7 @@ def init_modular_params(
     h_dim: int = 128,
     d_k: int = 128,
     d_v: int = 128,
-    num_freqs: int = 8,
+    num_freqs: int = 4,
 ) -> ModularParams:
     """Initialize modular model parameters.
 
