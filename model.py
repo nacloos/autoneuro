@@ -395,6 +395,65 @@ def reservoir_step(params: ReservoirParams, state: jnp.ndarray, x: jnp.ndarray):
 
 
 # =============================================================================
+# Module 8: Oscillator (coupled neural oscillations)
+# =============================================================================
+
+@struct.dataclass
+class OscillatorParams:
+    """Parameters for oscillator module.
+
+    Coupled oscillators with learnable frequencies and input-driven phase modulation.
+    Inspired by theta/gamma neural oscillations for timing and sequencing.
+    """
+    W_in_osc: jnp.ndarray     # (n_osc, input_dim) - input projection
+    b_in: jnp.ndarray         # (n_osc,)
+    log_freq: jnp.ndarray     # (n_osc,) - log frequencies (learnable)
+    W_couple: jnp.ndarray     # (n_osc, n_osc) - coupling between oscillators
+    w_drive: jnp.ndarray      # (input_dim,) - input drive strength
+    b_drive: jnp.ndarray      # (1,)
+    W_out: jnp.ndarray        # (output_dim, 2*n_osc) - readout from [sin, cos] phases
+
+
+def oscillator_step(params: OscillatorParams, state: jnp.ndarray, x: jnp.ndarray):
+    """Single step of oscillator module.
+
+    State: phase angles (n_osc,)
+    """
+    phase = state
+    n_osc = phase.shape[0]
+    # Input-driven phase modulation
+    input_mod = params.W_in_osc @ x + params.b_in  # (n_osc,)
+    # Learnable base frequencies
+    freq = jnp.exp(params.log_freq)  # (n_osc,) positive frequencies
+    # Phase coupling (Kuramoto-style)
+    phase_diff = phase[:, None] - phase[None, :]  # (n_osc, n_osc)
+    coupling = params.W_couple * jnp.sin(phase_diff)  # (n_osc, n_osc)
+    coupling_force = jnp.sum(coupling, axis=1) / n_osc  # (n_osc,)
+    # Drive strength from input
+    drive = jax.nn.sigmoid(params.w_drive @ x + params.b_drive).squeeze()
+    # Phase update
+    phase_new = phase + freq + drive * input_mod + 0.1 * coupling_force
+    # Output: concatenate sin and cos of phases
+    osc_features = jnp.concatenate([jnp.sin(phase_new), jnp.cos(phase_new)])  # (2*n_osc,)
+    y = params.W_out @ osc_features
+    return phase_new, y, drive
+
+
+def init_oscillator_params(rng, input_dim, output_dim, n_osc=64):
+    """Initialize oscillator module parameters."""
+    keys = jax.random.split(rng, 7)
+    return OscillatorParams(
+        W_in_osc=jax.random.normal(keys[0], (n_osc, input_dim)) * 0.01,
+        b_in=jnp.zeros(n_osc),
+        log_freq=jax.random.uniform(keys[1], (n_osc,), minval=-2.0, maxval=1.0),
+        W_couple=jax.random.normal(keys[2], (n_osc, n_osc)) * 0.01,
+        w_drive=jax.random.normal(keys[3], (input_dim,)) * 0.01,
+        b_drive=jnp.zeros(1),
+        W_out=jax.random.normal(keys[4], (output_dim, 2 * n_osc)) * (2.0 / (output_dim + 2 * n_osc)) ** 0.5,
+    )
+
+
+# =============================================================================
 # Combined Modular Model
 # =============================================================================
 
@@ -414,6 +473,7 @@ class ModularParams:
     comparators: Tuple[ComparatorParams, ...]
     grus: Tuple[GRUParams, ...]
     reservoirs: Tuple[ReservoirParams, ...]
+    oscillators: Tuple[OscillatorParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
     W_gain: jnp.ndarray  # (total_modules, input_dim) - neuromodulatory gain per module
@@ -459,7 +519,8 @@ def modular_forward(
     K_cmp = len(params.comparators)
     K_gru = len(params.grus)
     K_res = len(params.reservoirs)
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
+    K_osc = len(params.oscillators)
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res + K_osc
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -472,9 +533,10 @@ def modular_forward(
     cmp_dim = params.comparators[0].W_ref.shape[0] if K_cmp > 0 else 0
     gru_dim = params.grus[0].W_z.shape[0] if K_gru > 0 else 0
     res_dim = params.reservoirs[0].W_rec.shape[0] if K_res > 0 else 0
+    osc_dim = params.oscillators[0].log_freq.shape[0] if K_osc > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states, cmp_states, gru_states, res_states = states
+        int_states, mem_states, sg_states, li_states, cmp_states, gru_states, res_states, osc_states = states
 
         all_outputs = []
         new_int_states = []
@@ -484,6 +546,7 @@ def modular_forward(
         new_cmp_states = []
         new_gru_states = []
         new_res_states = []
+        new_osc_states = []
 
         gate_values = [] if return_gates else None
 
@@ -536,6 +599,13 @@ def modular_forward(
             if return_gates:
                 gate_values.append(leak)
 
+        for i in range(K_osc):
+            phase_new, y, drive = oscillator_step(params.oscillators[i], osc_states[i], x)
+            new_osc_states.append(phase_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(drive)
+
         # Stack outputs: (total_modules, output_dim) where total_modules = K_int + K_mem
         all_outputs = jnp.stack(all_outputs, axis=0)
 
@@ -570,7 +640,7 @@ def modular_forward(
         sigma = base_sigma + sigma_mod  # input-adaptive sigma
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_res_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_res_states, new_osc_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -588,12 +658,13 @@ def modular_forward(
     cmp_states_0 = [(jnp.zeros(cmp_dim), jnp.zeros(2 * cmp_dim)) for _ in range(K_cmp)]
     gru_states_0 = [jnp.zeros(gru_dim) for _ in range(K_gru)]
     res_states_0 = [jnp.zeros(res_dim) for _ in range(K_res)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, gru_states_0, res_states_0)
+    osc_states_0 = [jnp.zeros(osc_dim) for _ in range(K_osc)]
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, gru_states_0, res_states_0, osc_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_gru, K_res)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_gru, K_res, K_osc)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -601,7 +672,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_gru: int = 0, K_res: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_gru: int = 0, K_res: int = 0, K_osc: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -634,6 +705,10 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_res):
         gates[f'res{i}_leak'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_osc):
+        gates[f'osc{i}_drive'] = gate_arrays[:, idx]
         idx += 1
 
     return gates
@@ -850,7 +925,8 @@ def init_modular_params(
     K_cmp = 1  # Always add 1 comparator module
     K_gru = 1  # Always add 1 GRU module
     K_res = 1  # Always add 1 reservoir module
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
+    K_osc = 1  # Always add 1 oscillator module
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res + K_osc
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -890,6 +966,11 @@ def init_modular_params(
         for i in range(K_res)
     )
 
+    oscillators = tuple(
+        init_oscillator_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res + i], input_dim, output_dim, n_osc=64)
+        for i in range(K_osc)
+    )
+
     W_sel = jnp.zeros((n_selections, input_dim))
     b_sel = jnp.zeros(n_selections)
 
@@ -910,6 +991,7 @@ def init_modular_params(
         comparators=comparators,
         grus=grus,
         reservoirs=reservoirs,
+        oscillators=oscillators,
         W_sel=W_sel,
         b_sel=b_sel,
         W_gain=W_gain,
