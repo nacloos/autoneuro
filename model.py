@@ -360,6 +360,53 @@ def gru_step(params: GRUParams, state: jnp.ndarray, x: jnp.ndarray):
 
 
 # =============================================================================
+# Module 8: LSTM (Long Short-Term Memory)
+# =============================================================================
+
+@struct.dataclass
+class LSTMParams:
+    W_f: jnp.ndarray      # (h_dim, h_dim + input_dim) - forget gate
+    b_f: jnp.ndarray      # (h_dim,)
+    W_i: jnp.ndarray      # (h_dim, h_dim + input_dim) - input gate
+    b_i: jnp.ndarray      # (h_dim,)
+    W_c: jnp.ndarray      # (h_dim, h_dim + input_dim) - candidate
+    b_c: jnp.ndarray      # (h_dim,)
+    W_o: jnp.ndarray      # (h_dim, h_dim + input_dim) - output gate
+    b_o: jnp.ndarray      # (h_dim,)
+    W_out: jnp.ndarray    # (output_dim, h_dim)
+
+
+def lstm_step(params: LSTMParams, state, x: jnp.ndarray):
+    h, c = state
+    hx = jnp.concatenate([h, x])
+    f = jax.nn.sigmoid(params.W_f @ hx + params.b_f)
+    i = jax.nn.sigmoid(params.W_i @ hx + params.b_i)
+    c_hat = jnp.tanh(params.W_c @ hx + params.b_c)
+    c_new = f * c + i * c_hat
+    o = jax.nn.sigmoid(params.W_o @ hx + params.b_o)
+    h_new = o * jnp.tanh(c_new)
+    y = params.W_out @ h_new
+    return (h_new, c_new), y, jnp.mean(f)
+
+
+def init_lstm_params(rng, input_dim, output_dim, h_dim):
+    keys = jax.random.split(rng, 5)
+    concat_dim = h_dim + input_dim
+    scale = (2.0 / concat_dim) ** 0.5
+    return LSTMParams(
+        W_f=jax.random.normal(keys[0], (h_dim, concat_dim)) * scale,
+        b_f=jnp.ones(h_dim),  # forget bias=1: keep memories by default
+        W_i=jax.random.normal(keys[1], (h_dim, concat_dim)) * scale,
+        b_i=jnp.zeros(h_dim),
+        W_c=jax.random.normal(keys[2], (h_dim, concat_dim)) * scale,
+        b_c=jnp.zeros(h_dim),
+        W_o=jax.random.normal(keys[3], (h_dim, concat_dim)) * scale,
+        b_o=jnp.zeros(h_dim),
+        W_out=jax.random.normal(keys[4], (output_dim, h_dim)) * (2.0 / (output_dim + h_dim)) ** 0.5,
+    )
+
+
+# =============================================================================
 # Module 7: Reservoir / Echo State Network
 # =============================================================================
 
@@ -413,6 +460,7 @@ class ModularParams:
     lateral_inhibitions: Tuple[LateralInhibitionParams, ...]
     comparators: Tuple[ComparatorParams, ...]
     grus: Tuple[GRUParams, ...]
+    lstms: Tuple[LSTMParams, ...]
     reservoirs: Tuple[ReservoirParams, ...]
     W_sel: jnp.ndarray  # (n_selections, input_dim)
     b_sel: jnp.ndarray  # (n_selections,)
@@ -458,8 +506,9 @@ def modular_forward(
     K_li = len(params.lateral_inhibitions)
     K_cmp = len(params.comparators)
     K_gru = len(params.grus)
+    K_lstm = len(params.lstms)
     K_res = len(params.reservoirs)
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_lstm + K_res
     if total_modules == 0:
         raise ValueError("modular_forward requires at least one module")
 
@@ -471,10 +520,11 @@ def modular_forward(
     li_dim = params.lateral_inhibitions[0].W_e.shape[0] if K_li > 0 else 0
     cmp_dim = params.comparators[0].W_ref.shape[0] if K_cmp > 0 else 0
     gru_dim = params.grus[0].W_z.shape[0] if K_gru > 0 else 0
+    lstm_dim = params.lstms[0].W_f.shape[0] if K_lstm > 0 else 0
     res_dim = params.reservoirs[0].W_rec.shape[0] if K_res > 0 else 0
 
     def step(states, x):
-        int_states, mem_states, sg_states, li_states, cmp_states, gru_states, res_states = states
+        int_states, mem_states, sg_states, li_states, cmp_states, gru_states, lstm_states, res_states = states
 
         all_outputs = []
         new_int_states = []
@@ -483,6 +533,7 @@ def modular_forward(
         new_li_states = []
         new_cmp_states = []
         new_gru_states = []
+        new_lstm_states = []
         new_res_states = []
 
         gate_values = [] if return_gates else None
@@ -529,6 +580,13 @@ def modular_forward(
             if return_gates:
                 gate_values.append(z_mean)
 
+        for i in range(K_lstm):
+            state_new, y, f_mean = lstm_step(params.lstms[i], lstm_states[i], x)
+            new_lstm_states.append(state_new)
+            all_outputs.append(y)
+            if return_gates:
+                gate_values.append(f_mean)
+
         for i in range(K_res):
             h_new, y, leak = reservoir_step(params.reservoirs[i], res_states[i], x)
             new_res_states.append(h_new)
@@ -570,7 +628,7 @@ def modular_forward(
         sigma = base_sigma + sigma_mod  # input-adaptive sigma
         y = y / (sigma + jnp.sqrt(jnp.sum(y ** 2) + 1e-8))
 
-        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_res_states)
+        new_states = (new_int_states, new_mem_states, new_sg_states, new_li_states, new_cmp_states, new_gru_states, new_lstm_states, new_res_states)
 
         if return_gates:
             # Stack all gates into a single array for this timestep
@@ -587,13 +645,14 @@ def modular_forward(
     # Comparator state: (ref, h) where ref is (h_dim,) and h is (2*h_dim,)
     cmp_states_0 = [(jnp.zeros(cmp_dim), jnp.zeros(2 * cmp_dim)) for _ in range(K_cmp)]
     gru_states_0 = [jnp.zeros(gru_dim) for _ in range(K_gru)]
+    lstm_states_0 = [(jnp.zeros(lstm_dim), jnp.zeros(lstm_dim)) for _ in range(K_lstm)]
     res_states_0 = [jnp.zeros(res_dim) for _ in range(K_res)]
-    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, gru_states_0, res_states_0)
+    initial_states = (int_states_0, mem_states_0, sg_states_0, li_states_0, cmp_states_0, gru_states_0, lstm_states_0, res_states_0)
 
     if return_gates:
         _, (ys, selections, all_gate_arrays) = jax.lax.scan(step, initial_states, x_seq)
         # Parse gate arrays into dict
-        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_gru, K_res)
+        gates_dict = _parse_gate_arrays(all_gate_arrays, K_int, K_mem, K_sg, K_li, K_cmp, K_gru, K_lstm, K_res)
         gates_dict["out"] = selections
         return ys, gates_dict
     else:
@@ -601,7 +660,7 @@ def modular_forward(
         return ys
 
 
-def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_gru: int = 0, K_res: int = 0) -> dict:
+def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: int = 0, K_li: int = 0, K_cmp: int = 0, K_gru: int = 0, K_lstm: int = 0, K_res: int = 0) -> dict:
     """Parse concatenated gate array into named dict."""
     idx = 0
     gates = {}
@@ -630,6 +689,10 @@ def _parse_gate_arrays(gate_arrays: jnp.ndarray, K_int: int, K_mem: int, K_sg: i
 
     for i in range(K_gru):
         gates[f'gru{i}_z'] = gate_arrays[:, idx]
+        idx += 1
+
+    for i in range(K_lstm):
+        gates[f'lstm{i}_f'] = gate_arrays[:, idx]
         idx += 1
 
     for i in range(K_res):
@@ -849,8 +912,9 @@ def init_modular_params(
     K_li = 1  # Always add 1 lateral inhibition module
     K_cmp = 1  # Always add 1 comparator module
     K_gru = 1  # Always add 1 GRU module
+    K_lstm = 1  # Always add 1 LSTM module
     K_res = 1  # Always add 1 reservoir module
-    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
+    total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_lstm + K_res
     n_selections = total_modules + 1  # +1 for null module
 
     keys = jax.random.split(rng, total_modules + 1)
@@ -885,8 +949,13 @@ def init_modular_params(
         for i in range(K_gru)
     )
 
+    lstms = tuple(
+        init_lstm_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_gru + i], input_dim, output_dim, h_dim)
+        for i in range(K_lstm)
+    )
+
     reservoirs = tuple(
-        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_gru + i], input_dim, output_dim, h_dim)
+        init_reservoir_params(keys[K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_lstm + i], input_dim, output_dim, h_dim)
         for i in range(K_res)
     )
 
@@ -909,6 +978,7 @@ def init_modular_params(
         lateral_inhibitions=lateral_inhibitions,
         comparators=comparators,
         grus=grus,
+        lstms=lstms,
         reservoirs=reservoirs,
         W_sel=W_sel,
         b_sel=b_sel,
@@ -1041,7 +1111,7 @@ def make_loss_fn(forward_fn):
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
-            logit_penalty = 1e-3 * jnp.mean(logits ** 2, axis=-1)
+            logit_penalty = 5e-4 * jnp.mean(logits ** 2, axis=-1)
             per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
