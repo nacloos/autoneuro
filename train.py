@@ -80,8 +80,8 @@ class TrainConfig:
     n_test_samples: int = 1000
 
     # Model
-    embed_dim: int = 256
-    hidden_dim: int = 384
+    embed_dim: int = 192
+    hidden_dim: int = 320
 
     d_k: int = 64  # KV memory key dim
     d_v: int = 64  # KV memory value dim
