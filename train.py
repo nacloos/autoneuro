@@ -651,8 +651,8 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
-    # Stochastic Weight Averaging: accumulate params from last 20% of training
-    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
+    # Stochastic Weight Averaging: accumulate params from last 30% of training
+    swa_start_step = int(0.7 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
 
@@ -668,10 +668,6 @@ def train_model(
             # Convert batch to JAX arrays just before use
             x_batch = jnp.array(X_shuf[i:i+config.batch_size])
             y_batch = jnp.array(Y_shuf[i:i+config.batch_size])
-            # Input dropout: randomly zero 10% of input features during training
-            rng, drop_rng = jax.random.split(rng)
-            drop_mask = jax.random.bernoulli(drop_rng, p=0.9, shape=x_batch.shape).astype(jnp.float32)
-            x_batch = x_batch * drop_mask / 0.9  # scale to preserve expected value
             # Compute temperature from previous batch loss
             temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(1.0)
             params, opt_state, batch_loss = train_step(
@@ -761,7 +757,7 @@ def train_model(
         if stop_requested:
             break
 
-    # Use SWA params if available (averaged over last 20% of training)
+    # Use SWA params if available (averaged over last 30% of training)
     if swa_params is not None and swa_count > 10:
         print(f"  Using SWA params (averaged over {swa_count} steps)")
         params = swa_params
