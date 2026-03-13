@@ -966,7 +966,7 @@ def make_sequence_model_forward(
                 block_out = hidden + block_out
             if concat_input:
                 cat = jnp.concatenate([input_embed, block_out], axis=-1)
-                hidden = cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks]
+                hidden = jnp.tanh(cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks])
             else:
                 hidden = block_out
 
@@ -1010,7 +1010,7 @@ def make_sequence_model_forward_with_gates(
                 block_out = hidden + block_out
             if concat_input:
                 cat = jnp.concatenate([input_embed, block_out], axis=-1)
-                hidden = cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks]
+                hidden = jnp.tanh(cat @ params.W_cat[layer_idx % n_blocks].T + params.b_cat[layer_idx % n_blocks])
             else:
                 hidden = block_out
             all_layer_gates[f"layer{layer_idx}"] = layer_gates
