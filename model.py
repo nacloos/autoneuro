@@ -1040,8 +1040,9 @@ def make_loss_fn(forward_fn):
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
-            # No logit penalty - rely on EMA for smoothing
-            pass
+            # L2 penalty on logits
+            logit_penalty = 1e-3 * jnp.mean(logits ** 2, axis=-1)
+            per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
