@@ -1045,7 +1045,10 @@ def make_loss_fn(forward_fn):
             per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
-        return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
+        base_loss = jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
+        # Extra L2 on output projection weights
+        w_out_penalty = 1e-4 * jnp.mean(params.W_out ** 2)
+        return base_loss + w_out_penalty
 
     return loss_fn
 
