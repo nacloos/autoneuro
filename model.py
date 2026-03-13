@@ -761,7 +761,7 @@ def init_reservoir_params(
     input_dim: int,
     output_dim: int,
     h_dim: int,
-    spectral_radius: float = 0.9,
+    spectral_radius: float = 0.95,
 ) -> ReservoirParams:
     """Initialize reservoir module parameters.
 
@@ -847,7 +847,7 @@ def init_modular_params(
 
     K_sg = 1  # Always add 1 sensory gating module
     K_li = 1  # Always add 1 lateral inhibition module
-    K_cmp = 2  # Add 2 comparator modules
+    K_cmp = 1  # Always add 1 comparator module
     K_gru = 1  # Always add 1 GRU module
     K_res = 1  # Always add 1 reservoir module
     total_modules = K_int + K_mem + K_sg + K_li + K_cmp + K_gru + K_res
