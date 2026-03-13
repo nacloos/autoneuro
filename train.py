@@ -553,7 +553,19 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    optimizer = optax.adamw(config.lr, weight_decay=3e-2)
+    # Cyclic SWA schedule: constant LR for 80%, then cyclic between lr and lr/10
+    total_steps = config.max_train_steps if config.max_train_steps else 5000
+    swa_phase_start = int(0.8 * total_steps)
+    cycle_length = 100  # steps per cycle in SWA phase
+    def swa_cyclic_schedule(step):
+        # Before SWA phase: constant LR
+        in_swa = step >= swa_phase_start
+        # In SWA phase: triangular cycle between lr/10 and lr
+        cycle_pos = (step - swa_phase_start) % cycle_length
+        t = cycle_pos / cycle_length  # 0 to 1
+        cyclic_lr = config.lr / 10 + (config.lr - config.lr / 10) * (1 - t)
+        return jnp.where(in_swa, cyclic_lr, config.lr)
+    optimizer = optax.adamw(swa_cyclic_schedule, weight_decay=2e-2)
     opt_state = optimizer.init(params)
 
     @jax.jit
