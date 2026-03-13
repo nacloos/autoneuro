@@ -1033,7 +1033,7 @@ def make_loss_fn(forward_fn):
             logits = forward_fn(params, x, sample_rng, temperature=temperature)
             mask = (y >= 0).astype(jnp.float32)
             safe_y = jnp.maximum(y, 0).astype(jnp.int32)
-            log_probs = jax.nn.log_softmax(logits / 1.5, axis=-1)
+            log_probs = jax.nn.log_softmax(logits, axis=-1)
             n_classes = logits.shape[-1]
             # Label smoothing: mix one-hot with uniform
             smooth = 0.1
