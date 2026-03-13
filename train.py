@@ -652,10 +652,10 @@ def train_model(
     temperature = jnp.float32(1.0)
 
     # EMA in SWA phase: accumulate EMA of params from last 20% of training
-    swa_start_step = int(0.85 * (config.max_train_steps if config.max_train_steps else 5000))
+    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
-    ema_decay = 0.995
+    ema_decay = 0.99
 
     for epoch in range(config.n_epochs):
         rng, shuffle_rng = jax.random.split(rng)
