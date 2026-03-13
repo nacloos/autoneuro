@@ -761,7 +761,7 @@ def init_reservoir_params(
     input_dim: int,
     output_dim: int,
     h_dim: int,
-    spectral_radius: float = 0.95,
+    spectral_radius: float = 0.9,
 ) -> ReservoirParams:
     """Initialize reservoir module parameters.
 
