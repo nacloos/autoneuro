@@ -83,8 +83,8 @@ class TrainConfig:
     embed_dim: int = 256
     hidden_dim: int = 256
 
-    d_k: int = 128  # KV memory key dim
-    d_v: int = 128  # KV memory value dim
+    d_k: int = 64  # KV memory key dim
+    d_v: int = 64  # KV memory value dim
     K: str = "1"  # Number of modules: "K" or "K_int,K_mem"
     n_layers: int = 1  # Number of stacked blocks
     residual: bool = False  # Enable residual connections around each block
