@@ -1042,7 +1042,10 @@ def make_loss_fn(forward_fn):
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
             logit_penalty = 5e-4 * jnp.mean(logits ** 2, axis=-1)
-            per_step_loss = per_step_loss + logit_penalty
+            # Mild confidence penalty: penalize low entropy (over-confident predictions)
+            probs = jax.nn.softmax(logits, axis=-1)
+            conf_penalty = -0.01 * jnp.sum(probs * jnp.log(probs + 1e-8), axis=-1)  # negative entropy
+            per_step_loss = per_step_loss + logit_penalty + conf_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))

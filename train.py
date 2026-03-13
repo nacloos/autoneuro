@@ -651,12 +651,11 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
-    # Full-training EMA + SWA of EMA in last 20%
+    # EMA in SWA phase: accumulate EMA of params from last 20% of training
     swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
     ema_decay = 0.98
-    ema_params = None  # full-training EMA
 
     for epoch in range(config.n_epochs):
         rng, shuffle_rng = jax.random.split(rng)
@@ -678,22 +677,15 @@ def train_model(
             if use_annealing:
                 prev_loss = batch_loss
             global_step += 1
-            # Full-training EMA
-            if ema_params is None:
-                ema_params = jax.tree.map(lambda p: p.copy(), params)
-            else:
-                ema_params = jax.tree.map(
-                    lambda e, p: 0.999 * e + 0.001 * p, ema_params, params
-                )
-            # SWA of EMA params in last 20% of training
+            # EMA in SWA phase: accumulate EMA of params from last 20% of training
             if global_step >= swa_start_step:
                 if swa_params is None:
-                    swa_params = jax.tree.map(lambda p: p.copy(), ema_params)
+                    swa_params = jax.tree.map(lambda p: p.copy(), params)
                     swa_count = 1
                 else:
                     swa_count += 1
                     swa_params = jax.tree.map(
-                        lambda s, p: ema_decay * s + (1 - ema_decay) * p, swa_params, ema_params
+                        lambda s, p: ema_decay * s + (1 - ema_decay) * p, swa_params, params
                     )
             if config.max_train_steps is not None and global_step >= config.max_train_steps:
                 stop_requested = True
@@ -766,9 +758,9 @@ def train_model(
         if stop_requested:
             break
 
-    # Use EMA-SWA params if available
+    # Use EMA-SWA params if available (EMA over last 20% of training)
     if swa_params is not None and swa_count > 10:
-        print(f"  Using SWA-of-EMA params (ema=0.999, swa_decay={ema_decay}, collected over {swa_count} steps)")
+        print(f"  Using EMA-SWA params (decay={ema_decay}, collected over {swa_count} steps)")
         params = swa_params
     return history, params
 
