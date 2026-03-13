@@ -548,19 +548,19 @@ def modular_forward(
         null_output = jnp.zeros(all_outputs.shape[1])  # (output_dim,)
         all_outputs = jnp.concatenate([all_outputs, null_output[None, :]], axis=0)
 
-        # Selection over all modules + null (top-2 sparse routing like MoE)
+        # Selection over all modules + null
         if routing is not None:
+            # Fixed routing: use provided weights directly
             sel_weights = routing  # (n_selections,)
         else:
+            # Learned routing: softmax over logits (with temperature for annealing)
             sel_logits = params.W_sel @ x + params.b_sel  # (n_selections,)
             safe_temp = jnp.maximum(temperature, 1e-6)
-            # Top-2 routing: mask all but top-2 logits, then softmax
-            top2_vals, _ = jax.lax.top_k(sel_logits, 2)
-            threshold = top2_vals[-1]  # 2nd highest value
-            mask = sel_logits >= threshold
-            masked_logits = jnp.where(mask, sel_logits, -1e9)
-            sel_weights = jax.nn.softmax(masked_logits / safe_temp)  # (n_selections,)
+            sel_weights = jax.nn.softmax(sel_logits / safe_temp)  # (n_selections,)
 
+        # Select output (weighted sum with softmax, but since it's selection, use argmax-like behavior)
+        # For hard selection: y = all_outputs[argmax(sel_weights)]
+        # For soft selection (differentiable): y = sel_weights @ all_outputs
         y = sel_weights @ all_outputs  # (output_dim,)
 
         # Divisive normalization: canonical neural computation for contrast invariance
