@@ -1040,10 +1040,6 @@ def make_loss_fn(forward_fn):
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
-            # Confidence penalty: penalize overly peaked predictions (KL from uniform)
-            probs = jax.nn.softmax(logits, axis=-1)
-            conf_penalty = jnp.sum(probs * jnp.log(probs * n_classes + 1e-8), axis=-1)
-            per_step_loss = per_step_loss + 0.1 * conf_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
