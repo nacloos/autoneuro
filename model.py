@@ -895,7 +895,7 @@ def init_modular_params(
 
     # Neuromodulatory gain: initialized to bias=2 so sigmoid(2)≈0.88 (near 1, minimal effect initially)
     W_gain = jnp.zeros((total_modules, input_dim))
-    b_gain = jnp.full(total_modules, 0.0)  # sigmoid(0)=0.5 - more room for gain modulation
+    b_gain = jnp.full(total_modules, 2.0)
 
     # Learnable sigma for divisive normalization (init to log(1)=0)
     log_sigma = jnp.zeros(1)
@@ -1040,6 +1040,9 @@ def make_loss_fn(forward_fn):
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
+            # L2 penalty on logits to prevent them from growing too large
+            logit_penalty = 1e-4 * jnp.mean(logits ** 2, axis=-1)
+            per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
