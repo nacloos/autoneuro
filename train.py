@@ -652,7 +652,7 @@ def train_model(
     temperature = jnp.float32(1.0)
 
     # Stochastic Weight Averaging: accumulate params from last 20% of training
-    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
+    swa_start_step = int(0.5 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
 
