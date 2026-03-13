@@ -1034,17 +1034,16 @@ def make_loss_fn(forward_fn):
             mask = (y >= 0).astype(jnp.float32)
             safe_y = jnp.maximum(y, 0).astype(jnp.int32)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
-            probs = jax.nn.softmax(logits, axis=-1)
             n_classes = logits.shape[-1]
             # Label smoothing: mix one-hot with uniform
             smooth = 0.1
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
-            # Focal loss: (1-p_t)^gamma * CE, focuses on hard examples
-            gamma = 2.0
-            p_t = jnp.sum(probs * one_hot, axis=-1)  # probability of true class
-            focal_weight = (1.0 - p_t) ** gamma
-            per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1) * focal_weight
+            per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
+            # Confidence penalty: penalize overly peaked predictions (KL from uniform)
+            probs = jax.nn.softmax(logits, axis=-1)
+            conf_penalty = jnp.sum(probs * jnp.log(probs * n_classes + 1e-8), axis=-1)
+            per_step_loss = per_step_loss + 0.1 * conf_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
