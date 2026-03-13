@@ -651,6 +651,11 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
+    # Stochastic Weight Averaging: accumulate params from last 20% of training
+    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
+    swa_params = None
+    swa_count = 0
+
     for epoch in range(config.n_epochs):
         rng, shuffle_rng = jax.random.split(rng)
         # Keep permutation as NumPy array to avoid loading full dataset to GPU
@@ -671,6 +676,16 @@ def train_model(
             if use_annealing:
                 prev_loss = batch_loss
             global_step += 1
+            # SWA: accumulate running average of params in last 20% of training
+            if global_step >= swa_start_step:
+                if swa_params is None:
+                    swa_params = jax.tree.map(lambda p: p.copy(), params)
+                    swa_count = 1
+                else:
+                    swa_count += 1
+                    swa_params = jax.tree.map(
+                        lambda s, p: s + (p - s) / swa_count, swa_params, params
+                    )
             if config.max_train_steps is not None and global_step >= config.max_train_steps:
                 stop_requested = True
                 break
@@ -742,6 +757,10 @@ def train_model(
         if stop_requested:
             break
 
+    # Use SWA params if available (averaged over last 20% of training)
+    if swa_params is not None and swa_count > 10:
+        print(f"  Using SWA params (averaged over {swa_count} steps)")
+        params = swa_params
     return history, params
 
 
