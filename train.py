@@ -651,8 +651,8 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
-    # Stochastic Weight Averaging: accumulate params from last 30% of training
-    swa_start_step = int(0.7 * (config.max_train_steps if config.max_train_steps else 5000))
+    # Stochastic Weight Averaging: accumulate params from last 20% of training
+    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
 
@@ -757,7 +757,7 @@ def train_model(
         if stop_requested:
             break
 
-    # Use SWA params if available (averaged over last 30% of training)
+    # Use SWA params if available (averaged over last 20% of training)
     if swa_params is not None and swa_count > 10:
         print(f"  Using SWA params (averaged over {swa_count} steps)")
         params = swa_params
