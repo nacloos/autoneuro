@@ -952,7 +952,7 @@ def make_sequence_model_forward(
             tokens = x_seq.squeeze().astype(jnp.int32)
             hidden = params.embedding[tokens]
         else:
-            hidden = jax.nn.gelu(x_seq @ params.W_in.T + params.b_in)
+            hidden = x_seq @ params.W_in.T + params.b_in
 
         input_embed = hidden
         n_blocks = len(params.block_params)
@@ -991,7 +991,7 @@ def make_sequence_model_forward_with_gates(
             tokens = x_seq.squeeze().astype(jnp.int32)
             hidden = params.embedding[tokens]
         else:
-            hidden = jax.nn.gelu(x_seq @ params.W_in.T + params.b_in)
+            hidden = x_seq @ params.W_in.T + params.b_in
 
         input_embed = hidden
         n_blocks = len(params.block_params)
