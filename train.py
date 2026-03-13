@@ -651,8 +651,8 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
-    # EMA in SWA phase: accumulate EMA of params from last 20% of training
-    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
+    # Full-training EMA with decay=0.98
+    swa_start_step = 0  # Start from step 0
     swa_params = None
     swa_count = 0
     ema_decay = 0.98
@@ -670,7 +670,7 @@ def train_model(
             x_batch = jnp.array(X_shuf[i:i+config.batch_size])
             y_batch = jnp.array(Y_shuf[i:i+config.batch_size])
             # Compute temperature from previous batch loss
-            temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(0.5)
+            temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(1.0)
             params, opt_state, batch_loss = train_step(
                 params, opt_state, x_batch, y_batch, step_rng, temperature
             )
