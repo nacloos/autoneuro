@@ -651,8 +651,8 @@ def train_model(
     global_step = 0
     temperature = jnp.float32(1.0)
 
-    # Full-training EMA with decay=0.98
-    swa_start_step = 0  # Start from step 0
+    # EMA in SWA phase: accumulate EMA of params from last 20% of training
+    swa_start_step = int(0.8 * (config.max_train_steps if config.max_train_steps else 5000))
     swa_params = None
     swa_count = 0
     ema_decay = 0.98
