@@ -1041,7 +1041,7 @@ def make_loss_fn(forward_fn):
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
-            logit_penalty = 1e-4 * jnp.mean(logits ** 2, axis=-1)
+            logit_penalty = 5e-4 * jnp.mean(logits ** 2, axis=-1)
             per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
