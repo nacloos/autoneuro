@@ -104,7 +104,7 @@ class TrainConfig:
     # Positive routing_entropy_reg encourages per-step sparse/peaky routing.
     # Positive routing_balance_reg discourages collapse to one module globally.
     routing_entropy_reg: float = 0.0
-    routing_balance_reg: float = 0.01  # Encourage balanced module usage
+    routing_balance_reg: float = 0.0
 
     # Logging
     eval_interval: int = 1
