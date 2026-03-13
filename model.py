@@ -1036,16 +1036,13 @@ def make_loss_fn(forward_fn):
             log_probs = jax.nn.log_softmax(logits, axis=-1)
             n_classes = logits.shape[-1]
             # Label smoothing: mix one-hot with uniform
-            smooth = 0.1
+            smooth = 0.15
             one_hot = jax.nn.one_hot(safe_y, n_classes)
             soft_targets = (1.0 - smooth) * one_hot + smooth / n_classes
             per_step_loss = -jnp.sum(soft_targets * log_probs, axis=-1)
             # L2 penalty on logits to prevent them from growing too large
             logit_penalty = 1e-4 * jnp.mean(logits ** 2, axis=-1)
-            # Confidence penalty: small KL from uniform
-            probs = jax.nn.softmax(logits, axis=-1)
-            conf_penalty = jnp.sum(probs * jnp.log(probs * n_classes + 1e-8), axis=-1)
-            per_step_loss = per_step_loss + logit_penalty + 0.05 * conf_penalty
+            per_step_loss = per_step_loss + logit_penalty
             return jnp.sum(per_step_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         return jnp.mean(jax.vmap(single_loss)(x_batch, y_batch, rngs))
