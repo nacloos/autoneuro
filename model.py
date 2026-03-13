@@ -970,10 +970,6 @@ def make_sequence_model_forward(
             else:
                 hidden = block_out
 
-        # LayerNorm before output projection
-        h_mean = jnp.mean(hidden, axis=-1, keepdims=True)
-        h_var = jnp.var(hidden, axis=-1, keepdims=True)
-        hidden = (hidden - h_mean) / jnp.sqrt(h_var + 1e-5)
         logits = hidden @ params.W_out.T + params.b_out
         return logits
 
@@ -1019,10 +1015,6 @@ def make_sequence_model_forward_with_gates(
                 hidden = block_out
             all_layer_gates[f"layer{layer_idx}"] = layer_gates
 
-        # LayerNorm before output projection
-        h_mean = jnp.mean(hidden, axis=-1, keepdims=True)
-        h_var = jnp.var(hidden, axis=-1, keepdims=True)
-        hidden = (hidden - h_mean) / jnp.sqrt(h_var + 1e-5)
         logits = hidden @ params.W_out.T + params.b_out
         return logits, all_layer_gates
 
