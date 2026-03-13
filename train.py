@@ -553,17 +553,7 @@ def train_model(
     params = init_params if init_params is not None else spec.init(rng)
     print(f"  Parameters: {count_params(params):,}")
 
-    # Warmup + cosine LR schedule
-    warmup_steps = 500
-    total_steps = config.max_train_steps if config.max_train_steps else 5000
-    lr_schedule = optax.join_schedules(
-        schedules=[
-            optax.linear_schedule(init_value=0.0, end_value=config.lr, transition_steps=warmup_steps),
-            optax.cosine_decay_schedule(init_value=config.lr, decay_steps=total_steps - warmup_steps, alpha=1e-5 / config.lr),
-        ],
-        boundaries=[warmup_steps],
-    )
-    optimizer = optax.adamw(lr_schedule, weight_decay=2e-2)
+    optimizer = optax.adamw(config.lr, weight_decay=2e-2)
     opt_state = optimizer.init(params)
 
     @jax.jit
@@ -678,6 +668,10 @@ def train_model(
             # Convert batch to JAX arrays just before use
             x_batch = jnp.array(X_shuf[i:i+config.batch_size])
             y_batch = jnp.array(Y_shuf[i:i+config.batch_size])
+            # Input dropout: randomly zero 10% of input features during training
+            rng, drop_rng = jax.random.split(rng)
+            drop_mask = jax.random.bernoulli(drop_rng, p=0.9, shape=x_batch.shape).astype(jnp.float32)
+            x_batch = x_batch * drop_mask / 0.9  # scale to preserve expected value
             # Compute temperature from previous batch loss
             temperature = jnp.float32(config.tau_base + config.tau_scale * prev_loss) if use_annealing else jnp.float32(1.0)
             params, opt_state, batch_loss = train_step(
