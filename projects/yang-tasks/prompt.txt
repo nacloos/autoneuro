@@ -1,0 +1,2 @@
+/autoresearch optimize test acc on all yang tasks (training samples = 200 per task), optimize nn model and training    
+method. work only in the current folder, don't read anyhting outside it.  
