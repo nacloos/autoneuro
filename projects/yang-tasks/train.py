@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from extended_yang19 import TASKS
 import warnings
 import sys
+import os
+import pickle
 
 warnings.filterwarnings("ignore")
 
@@ -18,6 +20,7 @@ LR = 1e-3
 EPOCHS = 30
 BATCH_SIZE = 64
 SEED = 42
+DATA_CACHE_DIR = ".data_cache"
 
 # ── Data generation ─────────────────────────────────────────────────────────
 def generate_trials(task_name, task_fn, n_trials, max_steps=100):
@@ -29,10 +32,9 @@ def generate_trials(task_name, task_fn, n_trials, max_steps=100):
     trial_obs, trial_gt = [], []
     trial_count = 0
     
-    # Run environment collecting trials
     step = 0
     while trial_count < n_trials:
-        ob, rew, term, trunc, info = env.step(0)  # always fixate to collect data
+        ob, rew, term, trunc, info = env.step(0)
         trial_obs.append(ob)
         trial_gt.append(info.get('gt', 0))
         step += 1
@@ -49,15 +51,20 @@ def generate_trials(task_name, task_fn, n_trials, max_steps=100):
     return all_obs, all_gt
 
 
-def build_dataset(n_trials, seed=None):
-    """Build dataset: list of (obs_seq, gt_seq, task_id) for all tasks."""
+def build_dataset(n_trials, seed=None, cache_name=None):
+    """Build dataset with optional disk caching."""
+    if cache_name:
+        os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(DATA_CACHE_DIR, f"{cache_name}.pkl")
+        if os.path.exists(cache_path):
+            print(f"Loading cached {cache_name}...", file=sys.stderr)
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+    
     if seed is not None:
         np.random.seed(seed)
     
     task_names = sorted(TASKS.keys())
-    n_tasks = len(task_names)
-    obs_dim = 33
-    n_actions = 17
     
     all_data = []
     for task_id, task_name in enumerate(task_names):
@@ -66,7 +73,14 @@ def build_dataset(n_trials, seed=None):
         for obs, gt in zip(obs_list, gt_list):
             all_data.append((obs, gt, task_id))
     
-    return all_data, task_names
+    result = (all_data, task_names)
+    
+    if cache_name:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(result, f)
+        print(f"Cached {cache_name} ({len(all_data)} sequences)", file=sys.stderr)
+    
+    return result
 
 
 def collate_batch(batch, n_tasks):
@@ -106,13 +120,12 @@ class MultiTaskRNN(nn.Module):
         self.hidden_size = hidden_size
     
     def forward(self, obs, rule):
-        # obs: (B, T, obs_dim), rule: (B, n_tasks)
         B, T, _ = obs.shape
-        rule_expanded = rule.unsqueeze(1).expand(B, T, -1)  # (B, T, n_tasks)
-        x = torch.cat([obs, rule_expanded], dim=-1)  # (B, T, obs_dim + n_tasks)
+        rule_expanded = rule.unsqueeze(1).expand(B, T, -1)
+        x = torch.cat([obs, rule_expanded], dim=-1)
         x = F.relu(self.input_proj(x))
         x, _ = self.rnn(x)
-        logits = self.output(x)  # (B, T, n_actions)
+        logits = self.output(x)
         return logits
 
 
@@ -122,11 +135,11 @@ def train():
     np.random.seed(SEED)
     
     print("Generating training data...", file=sys.stderr)
-    train_data, task_names = build_dataset(NUM_TRAIN_TRIALS, seed=SEED)
+    train_data, task_names = build_dataset(NUM_TRAIN_TRIALS, seed=SEED, cache_name=f"train_{NUM_TRAIN_TRIALS}_s{SEED}")
     n_tasks = len(task_names)
     
     print("Generating test data...", file=sys.stderr)
-    test_data, _ = build_dataset(NUM_TEST_TRIALS, seed=SEED + 1000)
+    test_data, _ = build_dataset(NUM_TEST_TRIALS, seed=SEED + 1000, cache_name=f"test_{NUM_TEST_TRIALS}_s{SEED+1000}")
     
     model = MultiTaskRNN(obs_dim=33, n_tasks=n_tasks, hidden_size=HIDDEN_SIZE).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -146,9 +159,7 @@ def train():
             batch = train_data[i:i+BATCH_SIZE]
             obs, gt, mask, rule = collate_batch(batch, n_tasks)
             
-            logits = model(obs, rule)  # (B, T, n_actions)
-            
-            # Cross-entropy loss with mask
+            logits = model(obs, rule)
             logits_flat = logits.reshape(-1, logits.shape[-1])
             gt_flat = gt.reshape(-1)
             mask_flat = mask.reshape(-1)
@@ -166,16 +177,18 @@ def train():
         
         avg_loss = total_loss / n_batches
         
-        # Evaluate every 5 epochs
-        if (epoch + 1) % 5 == 0 or epoch == EPOCHS - 1:
+        if (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
+            train_acc = evaluate(model, train_data, n_tasks, task_names)
             test_acc = evaluate(model, test_data, n_tasks, task_names)
-            print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.4f} | Test Acc: {test_acc:.4f}", file=sys.stderr)
+            print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.4f} | Test Acc: {test_acc:.4f}", file=sys.stderr)
     
-    # Final evaluation with per-task breakdown
-    final_acc, per_task = evaluate(model, test_data, n_tasks, task_names, return_per_task=True)
+    # Final evaluation
+    train_acc_final = evaluate(model, train_data, n_tasks, task_names)
+    test_acc_final, per_task = evaluate(model, test_data, n_tasks, task_names, return_per_task=True)
     
     # Output metrics
-    print(f"METRIC mean_acc={final_acc:.6f}")
+    print(f"METRIC mean_acc={test_acc_final:.6f}")
+    print(f"METRIC train_acc={train_acc_final:.6f}")
     
     # Per-family averages
     from extended_yang19 import GO_TASKS, DM_TASKS, DLYDM_TASKS, MATCH_TASKS
@@ -185,18 +198,16 @@ def train():
         if accs:
             print(f"METRIC {fname}_acc={np.mean(accs):.6f}")
     
-    # Count tasks above thresholds
     above_50 = sum(1 for v in per_task.values() if v >= 0.5)
     above_80 = sum(1 for v in per_task.values() if v >= 0.8)
     print(f"METRIC tasks_above_50={above_50}")
     print(f"METRIC tasks_above_80={above_80}")
     
-    # Print worst 10 tasks to stderr for diagnostics
+    # Diagnostics
     sorted_tasks = sorted(per_task.items(), key=lambda x: x[1])
     print("\nWorst 10 tasks:", file=sys.stderr)
     for name, acc in sorted_tasks[:10]:
         print(f"  {name}: {acc:.4f}", file=sys.stderr)
-    
     print("\nBest 10 tasks:", file=sys.stderr)
     for name, acc in sorted_tasks[-10:]:
         print(f"  {name}: {acc:.4f}", file=sys.stderr)
@@ -206,7 +217,6 @@ def evaluate(model, test_data, n_tasks, task_names, return_per_task=False):
     """Evaluate model on test data. Returns mean accuracy (during decision period)."""
     model.eval()
     
-    # Group by task
     task_correct = {name: 0 for name in task_names}
     task_total = {name: 0 for name in task_names}
     
@@ -216,13 +226,11 @@ def evaluate(model, test_data, n_tasks, task_names, return_per_task=False):
             obs, gt, mask, rule = collate_batch(batch, n_tasks)
             
             logits = model(obs, rule)
-            preds = logits.argmax(dim=-1)  # (B, T)
+            preds = logits.argmax(dim=-1)
             
-            # Only count decision period (gt != 0) for accuracy
             decision_mask = (gt != 0).float() * mask
             correct = (preds == gt).float() * decision_mask
             
-            # Per-task accounting
             for j, (_, _, tid) in enumerate(batch):
                 tname = task_names[tid]
                 task_correct[tname] += correct[j].sum().item()
