@@ -15,9 +15,9 @@ warnings.filterwarnings("ignore")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_TRAIN_TRIALS = 200   # per task
 NUM_TEST_TRIALS = 50     # per task
-HIDDEN_SIZE = 256
+HIDDEN_SIZE = 512
 LR = 1e-3
-EPOCHS = 30
+EPOCHS = 60
 BATCH_SIZE = 64
 SEED = 42
 DATA_CACHE_DIR = ".data_cache"
