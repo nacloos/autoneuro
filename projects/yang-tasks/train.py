@@ -162,6 +162,9 @@ def train():
             batch = train_data[i:i+BATCH_SIZE]
             obs, gt, mask, rule = collate_batch(batch, n_tasks)
             
+            # Input noise augmentation during training
+            obs = obs + 0.1 * torch.randn_like(obs)
+            
             logits = model(obs, rule)
             logits_flat = logits.reshape(-1, logits.shape[-1])
             gt_flat = gt.reshape(-1)
