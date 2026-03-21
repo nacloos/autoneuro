@@ -112,10 +112,11 @@ def collate_batch(batch, n_tasks):
 
 # ── Model ───────────────────────────────────────────────────────────────────
 class MultiTaskRNN(nn.Module):
-    def __init__(self, obs_dim=33, n_tasks=93, hidden_size=256, n_actions=17):
+    def __init__(self, obs_dim=33, n_tasks=93, hidden_size=256, n_actions=17, dropout=0.0):
         super().__init__()
         self.input_proj = nn.Linear(obs_dim + n_tasks, hidden_size)
         self.rnn = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
         self.output = nn.Linear(hidden_size, n_actions)
         self.hidden_size = hidden_size
     
@@ -125,6 +126,7 @@ class MultiTaskRNN(nn.Module):
         x = torch.cat([obs, rule_expanded], dim=-1)
         x = F.relu(self.input_proj(x))
         x, _ = self.rnn(x)
+        x = self.dropout(x)
         logits = self.output(x)
         return logits
 
@@ -141,8 +143,8 @@ def train():
     print("Generating test data...", file=sys.stderr)
     test_data, _ = build_dataset(NUM_TEST_TRIALS, seed=SEED + 1000, cache_name=f"test_{NUM_TEST_TRIALS}_s{SEED+1000}")
     
-    model = MultiTaskRNN(obs_dim=33, n_tasks=n_tasks, hidden_size=HIDDEN_SIZE).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    model = MultiTaskRNN(obs_dim=33, n_tasks=n_tasks, hidden_size=HIDDEN_SIZE, dropout=0.3).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
     
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}", file=sys.stderr)
     print(f"Training: {len(train_data)} sequences, Testing: {len(test_data)} sequences", file=sys.stderr)
