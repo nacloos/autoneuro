@@ -35,3 +35,17 @@ commit	test_acc	memory_gb	status	description
 
 `status` can be `keep`, `discard`, or `crash`.
 With `--status auto` (default), a run is marked `keep` only if `test_acc` beats the prior best.
+
+## Plot Progress
+
+Generate an autoresearch progress plot from `results.tsv`:
+
+```bash
+uv run plot_progress.py --input results.tsv --output progress.png --metric test_acc --higher-is-better --window 0.02
+```
+
+For a BPB-style run (lower is better), use:
+
+```bash
+uv run plot_progress.py --input results.tsv --output progress.png --metric val_bpb --lower-is-better --window 0.0005
+```

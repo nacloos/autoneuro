@@ -214,6 +214,9 @@ def oscillator_step(params: OscillatorParams, state: jnp.ndarray, x: jnp.ndarray
     # Concatenate match and mismatch signals
     z = jnp.concatenate([match, mismatch])
 
+    # Layernorm before projection (stabilize different scales of match vs mismatch)
+    z = (z - jnp.mean(z)) / (jnp.std(z) + 1e-6)
+
     # Output projection
     y = params.W_out @ z
 
