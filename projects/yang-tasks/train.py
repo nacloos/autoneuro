@@ -17,7 +17,7 @@ NUM_TRAIN_TRIALS = 200   # per task
 NUM_TEST_TRIALS = 50     # per task
 HIDDEN_SIZE = 512
 LR = 1e-3
-EPOCHS = 60
+EPOCHS = 100
 BATCH_SIZE = 64
 SEED = 42
 DATA_CACHE_DIR = ".data_cache"
@@ -145,6 +145,7 @@ def train():
     
     model = MultiTaskRNN(obs_dim=33, n_tasks=n_tasks, hidden_size=HIDDEN_SIZE, dropout=0.3).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
     
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}", file=sys.stderr)
     print(f"Training: {len(train_data)} sequences, Testing: {len(test_data)} sequences", file=sys.stderr)
@@ -178,6 +179,7 @@ def train():
             n_batches += 1
         
         avg_loss = total_loss / n_batches
+        scheduler.step()
         
         if (epoch + 1) % 10 == 0 or epoch == EPOCHS - 1:
             train_acc = evaluate(model, train_data, n_tasks, task_names)
