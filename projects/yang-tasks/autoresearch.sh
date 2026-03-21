@@ -2,4 +2,4 @@
 set -euo pipefail
 
 # Run training and capture METRIC lines
-python train.py 2>/dev/null
+UV_CACHE_DIR=/storage/nacloos/.uv uv run python train.py 2>/dev/null
