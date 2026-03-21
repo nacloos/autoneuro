@@ -170,7 +170,7 @@ def train():
             gt_flat = gt.reshape(-1)
             mask_flat = mask.reshape(-1)
             
-            loss = F.cross_entropy(logits_flat, gt_flat, reduction='none')
+            loss = F.cross_entropy(logits_flat, gt_flat, reduction='none', label_smoothing=0.1)
             loss = (loss * mask_flat).sum() / mask_flat.sum()
             
             optimizer.zero_grad()
