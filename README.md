@@ -1,35 +1,53 @@
 # Autoneuro
 
-## Yang Tasks
+## Projects
 
-Run one research session from a template workspace:
+Each project lives under `projects/` and provides a `template/` directory. The
+launch scripts copy that template into a timestamped workspace before starting a
+research session.
 
-```bash
-./launch_claude.sh projects/yang-tasks
-```
-
-Or launch Codex:
-
-```bash
-./launch_codex.sh projects/yang-tasks
-```
-
-By default, the launcher creates:
+Create a project like this:
 
 ```text
-projects/yang-tasks/results/<timestamp>/workspace/
+projects/<name>/
+  template/
+    RESEARCH_QUESTION.md
+    RESEARCH_LOG.md
+    ...
 ```
 
-The template research question uses `dlygointr` as the held-out Yang task.
+Launch Claude Code:
+
+```bash
+./launch_claude.sh projects/<name>
+```
+
+Launch Codex:
+
+```bash
+./launch_codex.sh projects/<name>
+```
+
+Each launch creates:
+
+```text
+projects/<name>/results/<timestamp>/workspace/
+```
 
 Attach to the session:
 
 ```bash
-tmux attach -t yang-tasks-claude
+tmux attach -t <name>-claude
 ```
 
 Stop the session:
 
 ```bash
-./launch_claude.sh projects/yang-tasks stop
+./launch_claude.sh projects/<name> stop
+```
+
+Example:
+
+```bash
+./launch_claude.sh projects/yang-tasks
 ```
