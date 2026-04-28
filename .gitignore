@@ -1,1 +1,12 @@
 __pycache__/
+.venv/
+.codex
+*.log
+results.tsv
+
+projects/*/results/
+projects/*/workspace/
+projects/*/.data_cache/
+projects/*/template/.data_cache/
+projects/*/template/.venv/
+projects/*/template/__pycache__/

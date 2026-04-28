@@ -8,6 +8,7 @@ import warnings
 import sys
 import os
 import pickle
+from model import MultiTaskRNN
 
 warnings.filterwarnings("ignore")
 
@@ -108,25 +109,6 @@ def collate_batch(batch, n_tasks):
         torch.tensor(mask, device=DEVICE),
         torch.tensor(rule_input, device=DEVICE),
     )
-
-
-# ── Model ───────────────────────────────────────────────────────────────────
-class MultiTaskRNN(nn.Module):
-    def __init__(self, obs_dim=33, n_tasks=93, hidden_size=256, n_actions=17):
-        super().__init__()
-        self.input_proj = nn.Linear(obs_dim + n_tasks, hidden_size)
-        self.rnn = nn.GRU(hidden_size, hidden_size, batch_first=True)
-        self.output = nn.Linear(hidden_size, n_actions)
-        self.hidden_size = hidden_size
-    
-    def forward(self, obs, rule):
-        B, T, _ = obs.shape
-        rule_expanded = rule.unsqueeze(1).expand(B, T, -1)
-        x = torch.cat([obs, rule_expanded], dim=-1)
-        x = F.relu(self.input_proj(x))
-        x, _ = self.rnn(x)
-        logits = self.output(x)
-        return logits
 
 
 # ── Training ────────────────────────────────────────────────────────────────
