@@ -6,6 +6,7 @@ results.tsv
 
 projects/*/results/
 projects/*/workspace/
+projects/*/.venv/
 projects/*/.data_cache/
 projects/*/template/.data_cache/
 projects/*/template/.venv/

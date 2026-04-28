@@ -1,0 +1,18 @@
+[project]
+name = "modularisation"
+version = "0.1.0"
+description = "Training experiments for modularisation."
+requires-python = ">=3.10"
+dependencies = [
+    "ipykernel",
+    "jupyter",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "scipy",
+    "torch",
+]
+
+[tool.uv]
+package = false
