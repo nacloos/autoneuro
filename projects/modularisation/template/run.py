@@ -92,15 +92,7 @@ def main():
     num_epochs = 10000
 
     settings = [
-        {"name": "Noise0", "noise_coef": 0.1, "noise_expt": 0},
-        {"name": "Noise1", "noise_coef": 0.1, "noise_expt": 1},
-        {"name": "Noise2", "noise_coef": 0.1, "noise_expt": 2},
-        {"name": "L2"},
-        {"name": "L1", "L1": 1e-3},
-        {"name": "Act", "Act": 1e-3},
-        {"name": "WeightedAct", "WeightedAct": 1e-3},
-        {"name": "WeightedActSigmoid", "WeightedAct": 1e-3, "use_sigmoid": True},
-        {"name": "WeightedActTanh", "WeightedAct": 1e-3, "use_tanh": True},
+        {"name": "Noise2", "noise_coef": 0., "noise_expt": 2},
     ]
 
     for setting in settings:

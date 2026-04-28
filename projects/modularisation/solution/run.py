@@ -38,8 +38,8 @@ def main():
     encode_num = 4
     decode_num = 4
     k = encode_num
-    hidden_num = 32
-    layer_num = 3
+    hidden_num = 16
+    layer_num = 2
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     seed = 145
@@ -92,8 +92,8 @@ def main():
     num_epochs = 10000
 
     settings = [
-        {"name": "Noise0", "noise_coef": 0.1, "noise_expt": 0},
-        {"name": "Noise1", "noise_coef": 0.1, "noise_expt": 1},
+        # {"name": "Noise0", "noise_coef": 0.1, "noise_expt": 0},
+        # {"name": "Noise1", "noise_coef": 0.1, "noise_expt": 1},
         {"name": "Noise2", "noise_coef": 0.1, "noise_expt": 2},
         {"name": "L2"},
         {"name": "L1", "L1": 1e-3},

@@ -11,3 +11,6 @@ projects/*/.data_cache/
 projects/*/template/.data_cache/
 projects/*/template/.venv/
 projects/*/template/__pycache__/
+
+
+**/results/
